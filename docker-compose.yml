@@ -1,0 +1,37 @@
+# Sakura-Chat —— Docker Compose 部署
+#
+# 启动：  docker compose up -d --build
+# 访问：  http://localhost:3000（宿主机端口由 HOST_PORT 控制）
+# 停止：  docker compose down
+#
+# ⚠️ 首次启动会在 sakura-data 卷中生成存储主密钥 key.json。
+#    一旦开始聊天，该文件与数据库**必须备份**——丢失将无法解密历史消息！
+
+services:
+  sakura-chat:
+    build: .
+    image: sakura-chat:latest
+    container_name: sakura-chat
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-3000}:3000"   # 宿主机端口:容器端口（容器内固定 3000）
+    environment:
+      - PORT=3000
+      # JWT 签名密钥：务必在 .env 或部署环境中注入随机值！
+      # 生成：openssl rand -hex 32
+      - JWT_SECRET=${JWT_SECRET:-please-change-me-to-a-long-random-string}
+      # 可选：挂载 TLS 证书后启用 HTTPS/WSS（把证书放进 server/data 卷）
+      # - SSL_KEY_PATH=/app/server/data/key.pem
+      # - SSL_CERT_PATH=/app/server/data/cert.pem
+    volumes:
+      - sakura-data:/app/server/data        # key.json + SQLite（持久化）
+      - sakura-uploads:/app/public/uploads  # 图片/语音上传文件
+    # 资源限制（按需调整）
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 512M
+
+volumes:
+  sakura-data:
+  sakura-uploads:

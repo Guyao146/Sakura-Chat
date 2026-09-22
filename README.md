@@ -14,19 +14,24 @@ Node.js 全栈（后端 Express + WebSocket + SQLite，前端原生 ES Module �
 | 账号 | 用户名/密码注册登录、JWT 鉴权、密码 scrypt 哈希存储 |
 | 好友 | 用户名/昵称搜索、好友请求（发送/同意/拒绝）、好友列表、删除好友 |
 | 单聊 | 实时收发、离线消息存储、**已发送 → 已送达 → 已读** 状态回执 |
-| 群聊 | 建群（群主）、邀请成员、移出成员、退群、解散群、群成员列表 |
+| 群聊 | 建群（群主）、邀请成员、移出成员、退群、解散群、群成员列表、**群公告**、**群昵称**、**群主/管理员（管理员可发公告、移人）** |
 | 消息 | 文字、Emoji 表情面板、**表情包（程序化生成的猫咪贴纸）**、图片消息（上传/预览）、**语音消息（按住说话、波形播放）**、系统消息 |
+| 消息交互 | **2 分钟内撤回**、**引用回复（点击引用卡片跳转原文）**、**表情反应（点赞/爱心等角标）**、**消息编辑**、**拍一拍**、消息复制、未读角标、未读分界线、上下滚动加载历史 |
 | 通话 | **1 对 1 语音 / 视频通话**（WebRTC，媒体 P2P 直连且 DTLS-SRTP 端到端加密，信令走加密 WS 通道） |
-| 交互 | **2 分钟内撤回**、消息复制、未读角标、浏览器标签未读总数、上下滚动加载历史、时间分隔线 |
-| 状态 | 在线/离线指示、"对方正在输入…" 提示 |
-| 聊天记录 | 服务端加密存储、分页加载、**会话内聊天记录搜索** |
+| 输入 | 粘贴/拖拽图片文件直接上传、右键菜单（复制/引用/拍一拍/撤回/编辑/收藏） |
+| 状态 | **四态在线状态（在线/隐身/忙碌/离线，隐身对他人表现为离线）**、"对方正在输入…" 提示 |
+| 会话管理 | **置顶**、**免打扰**、**全局搜索（好友/群/消息/收藏四分组）**、**消息收藏** |
+| 聊天记录 | 服务端加密存储、分页加载、会话内聊天记录搜索 |
 | 资料 | 修改昵称、个性签名、上传头像 |
+| 界面 | Markdown 渲染、**移动端自适应（窄屏单栏切换）**、侧边栏可拖拽调宽（宽度记忆） |
 
 ---
 
 ## 🚀 快速开始
 
 > 环境要求：Node.js ≥ 22（使用内置 `node:sqlite` 与 `node:crypto`，无需编译原生模块）
+
+### 方式一：Node.js 直接启动
 
 ```bash
 # 1. 安装依赖（仅 express 与 ws 两个包）
@@ -40,7 +45,22 @@ npm start
 
 浏览器打开 **http://localhost:3000** ，注册账号即可开始使用。开两个浏览器窗口（或无痕窗口）注册两个账号互加好友，即可体验完整流程。
 
-首次启动时会自动在 `server/data/key.json` 生成**存储主密钥**，用于加密数据库中的聊天记录。
+### 方式二：Docker Compose（推荐生产环境）
+
+```bash
+# 一条命令构建并启动（首次约 1 分钟）
+docker compose up -d --build
+
+# 查看日志 / 停止
+docker compose logs -f
+docker compose down
+```
+
+- 浏览器打开 **http://localhost:3000**（可用 `HOST_PORT=8080 docker compose up -d` 换宿主机端口）
+- **务必先设置 JWT 密钥**：在项目根目录创建 `.env`（参考 `.env.example`）写入 `JWT_SECRET=<openssl rand -hex 32 生成>`
+- 数据持久化：主密钥 `key.json` 与 SQLite 数据库存放在 `sakura-data` 卷，上传文件在 `sakura-uploads` 卷——**重建容器不丢数据，但请定期备份卷**
+
+两种方式首次启动都会自动在 `server/data/key.json` 生成**存储主密钥**，用于加密数据库中的聊天记录。
 
 ---
 
@@ -50,24 +70,32 @@ npm start
 Sakura-Chat/
 ├── package.json
 ├── .env.example          # 配置示例（端口 / JWT 密钥 / TLS 证书）
+├── Dockerfile            # 多阶段构建（node:24-alpine，非 root 运行，含健康检查）
+├── docker-compose.yml    # 一键部署（数据/上传卷持久化）
+├── .dockerignore
+├── .github/
+│   └── workflows/
+│       ├── ci.yml               # push/PR：语法检查 + E2E 38 项 + Docker 镜像冒烟
+│       └── docker-publish.yml   # push master：构建并推送镜像到 ghcr.io
 ├── server/
 │   ├── index.js          # 入口：HTTP(S) + WebSocket + 静态托管前端
 │   ├── config.js         # 配置加载、主密钥生成
 │   ├── crypto.js         # AES-256-GCM 加解密、scrypt 密码哈希
 │   ├── token.js          # 极简 JWT（HMAC-SHA256，零依赖）
-│   ├── db.js             # SQLite 表结构与 DAO
+│   ├── db.js             # SQLite 表结构与 DAO（含幂等迁移）
 │   ├── state.js          # 在线连接、会话密钥、加密推送
 │   ├── services.js       # 会话权限校验、好友/群关系、会话内广播
 │   ├── messaging.js      # 系统消息写入
 │   ├── middleware.js     # 鉴权中间件
-│   ├── ws.js             # WebSocket：收发/已读/输入/撤回/心跳/重连
+│   ├── ws.js             # WebSocket：收发/已读/输入/撤回/反应/编辑/拍一拍/心跳/重连
 │   ├── keygen.js         # 重新生成主密钥与 JWT 密钥（npm run keygen）
 │   └── api/              # REST 接口
 │       ├── auth.js       # 注册 / 登录 / 会话密钥
-│       ├── users.js      # 搜索 / 资料
+│       ├── users.js      # 搜索 / 资料 / 在线状态
 │       ├── friends.js    # 好友请求 / 列表
-│       ├── groups.js     # 群增删改查
-│       ├── conversations.js  # 会话列表 / 历史 / 已读 / 搜索
+│       ├── groups.js     # 群增删改查 / 公告 / 管理员
+│       ├── conversations.js  # 会话列表 / 历史 / 已读 / 搜索 / 置顶免打扰 / 收藏
+│       ├── stickers.js   # 自定义表情包（加密存储）
 │       └── upload.js     # 图片/文件/语音上传
 ├── tools/
 │   └── gen-stickers.js   # 表情包生成器（npm run stickers）
@@ -80,7 +108,7 @@ Sakura-Chat/
 │       ├── login.js      # 登录/注册视图
 │       ├── app.js        # 主应用：会话列表/聊天窗口/实时事件/通话 UI
 │       └── lib/          # crypto / api / socket / util / emoji / voice / call
-└── test/e2e.js           # 端到端集成测试
+└── test/e2e.js           # 端到端集成测试（38 项断言）
 ```
 ## 🔐 加密架构（三层）
 
@@ -140,11 +168,19 @@ Sakura-Chat/
 ## 🧪 测试
 
 ```bash
-npm start          # 先启动服务
-npm test           # 运行端到端测试
+# 方式一：Node.js 直跑
+npm start                                  # 先启动服务（另开终端）
+HOST=http://127.0.0.1:3000 npm test        # 运行端到端测试
+
+# 方式二：Docker 容器内跑（CI 同款，服务与测试同在容器网络）
+docker build -t sakura-chat:test .
+docker run -d --rm --name sakura-test -p 3300:3000 sakura-chat:test
+HOST=http://127.0.0.1:3300 npm test
 ```
 
-测试覆盖：注册登录、JWT、会话密钥、好友请求/同意、**加密 WS 收发**、ACK、已读回执、输入提示、撤回、群聊广播、**表情包与语音消息收发**、**通话信令中继（邀请/应答/ICE/拒绝/挂断、非好友拦截、离线回执、通话记录）**、服务端聊天记录搜索，以及**断言数据库中不存在明文聊天记录**（共 24 项）。
+> 也可使用 GitHub Actions：每次 push/PR 自动执行**语法检查 + 38 项 E2E 回归 + Docker 镜像构建冒烟**，无需本地配置。
+
+测试覆盖：注册登录、JWT、会话密钥、好友请求/同意、**加密 WS 收发**、ACK、已读回执、输入提示、撤回、群聊广播、**表情包与语音消息收发**、**通话信令中继（邀请/应答/ICE/拒绝/挂断、非好友拦截、离线回执、通话记录）**、**引用回复 / 表情反应 / 消息编辑 / 拍一拍（含"他人消息不可编辑"权限）**、**置顶 + 免打扰、全局搜索、收藏/取消收藏、隐身状态广播**、服务端聊天记录搜索，以及**断言数据库中不存在明文聊天记录**（共 **38** 项）。
 
 ---
 
@@ -160,7 +196,49 @@ npm test           # 运行端到端测试
 
 ---
 
-## 📦 生产部署建议
+## 📦 部署
+
+### 方式一：Docker Compose（推荐）
+
+```bash
+# 1. 配置 JWT 密钥（.env，参考 .env.example）
+echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
+
+# 2. 构建并启动
+docker compose up -d --build
+
+# 3. 升级（拉代码后）
+git pull && docker compose up -d --build
+```
+
+数据安全须知：
+- `sakura-data` 卷保存 **主密钥 key.json + SQLite 数据库**，务必定期 `docker run --rm -v sakura-chat_sakura-data:/data -v $PWD:/backup alpine tar czf /backup/data.tgz -C /data .` 备份
+- 反代（Nginx/Caddy）终结 TLS 时需放行 WebSocket Upgrade 头，并转发 `ws` 到容器 3000 端口
+
+### 方式二：Node.js 裸机 / pm2
+
+```bash
+npm ci --omit=dev
+PORT=3000 JWT_SECRET=<随机值> node server/index.js
+# 或 pm2 start server/index.js --name sakura-chat
+```
+
+### CI/CD（GitHub Actions）
+
+| Workflow | 触发 | 作用 |
+| --- | --- | --- |
+| `ci.yml` | push / PR | 语法检查 → E2E 38 项 → Docker 镜像构建冒烟 |
+| `docker-publish.yml` | push master / tag `v*` | 构建多平台镜像并推送到 **ghcr.io/Guyao146/Sakura-Chat**（私有仓库即私有镜像） |
+
+服务器直接拉取已发布镜像：
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u Guyao146 --password-stdin
+docker pull ghcr.io/guyao146/sakura-chat:latest
+# 然后用 docker-compose 的 image 字段替换为 ghcr.io 地址，或 docker run -v sakura-data:/app/server/data -p 3000:3000 ghcr.io/guyao146/sakura-chat:latest
+```
+
+### 其他生产建议
 
 1. **启用 TLS**：把证书放到 `server/data/`，在 `.env` 中配置：
    ```env

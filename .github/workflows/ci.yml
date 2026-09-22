@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 语法检查 + E2E 回归
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 语法检查（服务端 + 测试，CommonJS）
+        run: |
+          set -e
+          for f in server/*.js server/api/*.js test/e2e.js tools/*.js; do
+            node --check "$f"
+          done
+          echo "server/test syntax ok"
+
+      - name: 语法检查（前端，ES Module 复制为 .mjs 后解析）
+        run: |
+          set -e
+          for f in public/js/*.js public/js/lib/*.js; do
+            tmp="$(mktemp --suffix=.mjs)"
+            cp "$f" "$tmp"
+            node --check "$tmp"
+            rm -f "$tmp"
+          done
+          echo "frontend syntax ok"
+
+      - name: 后台启动服务（端口 3100）
+        run: |
+          set -e
+          PORT=3100 JWT_SECRET=ci-test-secret \
+            nohup node server/index.js > server-ci.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3100/api/health > /dev/null; then
+              echo "service up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "service failed to start"
+          cat server-ci.log
+          exit 1
+
+      - name: E2E 测试（38 项断言）
+        run: HOST=http://127.0.0.1:3100 npm test
+
+      - name: 失败时输出服务端日志
+        if: failure()
+        run: cat server-ci.log
+
+  docker:
+    name: Docker 镜像构建冒烟
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建镜像（验证 Dockerfile 可用）
+        run: docker build -t sakura-chat:ci .
+
+      - name: 容器冒烟：启动 + 健康检查
+        run: |
+          set -e
+          docker run -d --rm --name sakura-ci -p 3200:3000 sakura-chat:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3200/api/health > /dev/null; then
+              echo "container healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "container unhealthy"
+          docker logs sakura-ci
+          exit 1

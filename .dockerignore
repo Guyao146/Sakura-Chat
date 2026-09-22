@@ -1,0 +1,18 @@
+# 依赖与本地环境
+node_modules
+npm-debug.log*
+
+# 版本控制与 CI
+.git
+.gitignore
+.github
+
+# 敏感数据与运行时产物（不进镜像；由 named volume 持久化）
+server/data
+public/uploads
+*.log
+server.pid
+.env
+
+# 文档
+README.md
