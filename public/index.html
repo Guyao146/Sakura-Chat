@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sakura Chat</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%B8%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <!-- ================= 登录 / 注册 ================= -->
+  <div id="login-view" class="login-wrap">
+    <div class="login-card">
+      <div class="login-logo"><span class="logo-emoji">🌸</span> Sakura Chat</div>
+      <div class="login-sub">安全，隐私，自主</div>
+      <div class="login-tabs">
+        <button id="tab-login" class="login-tab active">登录</button>
+        <button id="tab-register" class="login-tab">注册</button>
+      </div>
+      <form id="form-login" class="login-form">
+        <input id="login-username" class="login-input" placeholder="用户名" autocomplete="username" required>
+        <input id="login-password" class="login-input" type="password" placeholder="密码" autocomplete="current-password" required>
+        <button type="submit" class="login-btn">登 录</button>
+      </form>
+      <form id="form-register" class="login-form" hidden>
+        <input id="reg-username" class="login-input" placeholder="用户名（3-20 位字母/数字/下划线）" required>
+        <input id="reg-nickname" class="login-input" placeholder="昵称（留空则用用户名）">
+        <input id="reg-password" class="login-input" type="password" placeholder="密码（6-32 位）" required>
+        <button type="submit" class="login-btn">注 册</button>
+      </form>
+      <div id="login-error" class="login-error"></div>
+      <div class="login-tip">应用层 AES-256-GCM 端到加密 · 聊天记录加密落库</div>
+    </div>
+  </div>
+
+  <!-- ================= 主应用 ================= -->
+  <div id="app-view" class="app-wrap" hidden>
+    <aside class="sidebar">
+      <div class="profile-bar">
+        <div class="avatar" id="my-avatar"></div>
+        <div class="profile-info">
+          <div class="profile-name"><span id="my-nickname"></span><span class="status-dot online" id="status-dot" title="在线"></span></div>
+          <div class="profile-signature" id="my-signature"></div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="conv-search-box">
+          <span class="search-ico">🔍</span>
+          <input id="conv-search" placeholder="搜索聊天记录" autocomplete="off">
+        </div>
+        <button class="icon-btn" id="btn-add-friend" title="添加好友">➕</button>
+        <button class="icon-btn" id="btn-create-group" title="发起群聊">👥</button>
+      </div>
+      <div class="conv-list" id="conv-list"></div>
+      <nav class="sidebar-foot">
+        <button class="foot-btn" id="btn-status" title="在线状态">🟢</button>
+        <button class="foot-btn" id="btn-saved" title="我的收藏">⭐</button>
+        <button class="foot-btn" id="btn-requests" title="好友请求">📨<span id="requests-badge" class="badge" hidden></span></button>
+        <button class="foot-btn" id="btn-profile" title="个人资料">👤</button>
+        <button class="foot-btn" id="btn-logout" title="退出登录">🚪</button>
+      </nav>
+    </aside>
+    <div class="sidebar-resizer" id="sidebar-resizer" title="拖动调整宽度"></div>
+
+    <main class="chat-area">
+      <div class="chat-empty" id="chat-empty">
+        <div class="chat-empty-logo">🌸</div>
+        <p>Sakura Chat</p>
+        <span>选择左侧会话开始聊天，所有消息均已加密传输</span>
+      </div>
+      <div class="chat-main" id="chat-main" hidden>
+        <header class="chat-header">
+          <button class="icon-btn back-btn" id="btn-back" title="返回">‹</button>
+          <div class="chat-title-wrap">
+            <div class="chat-title" id="chat-title"></div>
+            <div class="chat-subtitle" id="chat-subtitle"></div>
+          </div>
+          <button class="icon-btn" id="btn-call-voice" title="语音通话" hidden>📞</button>
+          <button class="icon-btn" id="btn-call-video" title="视频通话" hidden>📹</button>
+          <button class="icon-btn" id="btn-search-history" title="搜索聊天记录">🔍</button>
+          <button class="icon-btn" id="btn-info" title="会话信息">⋯</button>
+        </header>
+        <div class="msg-list" id="msg-list"></div>
+        <div class="typing-hint" id="typing-hint" hidden></div>
+        <div class="search-panel" id="search-panel" hidden>
+          <div class="search-panel-head">
+            <input id="history-search-input" placeholder="搜索本会话聊天记录" autocomplete="off">
+            <button class="icon-btn" id="btn-close-search" title="关闭">✕</button>
+          </div>
+          <div class="search-results" id="search-results"></div>
+        </div>
+        <div class="input-area">
+          <div class="draft-bar" id="reply-bar" hidden>
+            <span class="reply-ico">↩</span>
+            <span class="reply-snip"></span>
+            <button class="icon-btn draft-cancel" id="reply-cancel" title="取消引用">✕</button>
+          </div>
+          <div class="draft-bar fwd" id="forward-bar" hidden>
+            <span class="reply-ico">➤</span>
+            <span class="reply-snip">转发消息：发送给当前会话</span>
+            <button class="icon-btn draft-cancel" id="forward-cancel" title="取消转发">✕</button>
+          </div>
+          <div class="input-row">
+            <button class="icon-btn" id="btn-sticker" title="表情包">😺</button>
+            <button class="icon-btn" id="btn-emoji" title="表情">😊</button>
+            <button class="icon-btn" id="btn-voice" title="按住说话">🎙️</button>
+            <button class="icon-btn" id="btn-image" title="发送图片">🖼️</button>
+            <button class="icon-btn" id="btn-file" title="发送文件">📎</button>
+            <input type="file" id="file-image" accept="image/*" hidden>
+            <input type="file" id="file-any" hidden>
+            <textarea id="msg-input" rows="1" placeholder="输入消息，Enter 发送 / Shift+Enter 换行"></textarea>
+            <button class="send-btn" id="btn-send">发送</button>
+          </div>
+        </div>
+        <div class="voice-recording" id="voice-recording" hidden>
+          <div class="vr-mic">🎙️</div>
+          <div class="vr-body">
+            <div class="vr-wave"><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="vr-info"><span id="vr-time">0"</span><span class="vr-tip" id="vr-tip">松开发送 · 上滑取消</span></div>
+          </div>
+        </div>
+        <div class="emoji-panel" id="emoji-panel" hidden></div>
+        <div class="sticker-panel" id="sticker-panel" hidden></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ================= 通话窗口 ================= -->
+  <div class="call-window" id="call-window" hidden>
+    <video class="call-remote" id="call-remote" autoplay playsinline></video>
+    <div class="call-local-wrap">
+      <video class="call-local" id="call-local" autoplay playsinline muted></video>
+    </div>
+    <div class="call-stage" id="call-stage">
+      <div class="call-avatar" id="call-avatar"></div>
+      <div class="call-peer-name" id="call-peer-name"></div>
+      <div class="call-status" id="call-status"></div>
+    </div>
+    <div class="call-timer" id="call-timer" hidden></div>
+    <div class="call-controls">
+      <button class="call-btn" id="call-mute" title="静音"><span>🎤</span></button>
+      <button class="call-btn" id="call-camera" title="摄像头" hidden><span>📹</span></button>
+      <button class="call-btn" id="call-switch" title="切换摄像头" hidden><span>🔄</span></button>
+      <button class="call-btn hangup" id="call-hangup" title="挂断"><span>📞</span></button>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="modal-mask" hidden>
+    <div class="modal" id="modal-box"></div>
+  </div>
+  <div class="toast-wrap" id="toast-wrap"></div>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>

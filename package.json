@@ -1,0 +1,21 @@
+{
+  "name": "sakura-chat",
+  "version": "1.0.0",
+  "description": "A WeChat-like real-time chat app (Node.js full-stack, encrypted transport + encrypted storage)",
+  "type": "commonjs",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node test/e2e.js",
+    "keygen": "node server/keygen.js",
+    "stickers": "node tools/gen-stickers.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

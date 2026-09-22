@@ -1,0 +1,8 @@
+node_modules/
+server/data/
+public/uploads/
+.env
+server.pid
+server-out.log
+server-err.log
+*.log
