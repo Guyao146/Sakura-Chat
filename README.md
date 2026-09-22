@@ -228,7 +228,7 @@ PORT=3000 JWT_SECRET=<随机值> node server/index.js
 | Workflow | 触发 | 作用 |
 | --- | --- | --- |
 | `ci.yml` | push / PR | 语法检查 → E2E 38 项 → Docker 镜像构建冒烟 |
-| `docker-publish.yml` | push master / tag `v*` | 构建多平台镜像并推送到 **ghcr.io/Guyao146/Sakura-Chat**（私有仓库即私有镜像） |
+| `docker-publish.yml` | push master / tag `v*` | 构建镜像并推送到 **ghcr.io/guyao146/sakura-chat**（私有仓库即私有镜像） |
 
 服务器直接拉取已发布镜像：
 
