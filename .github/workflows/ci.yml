@@ -56,7 +56,7 @@ jobs:
           cat server-ci.log
           exit 1
 
-      - name: E2E 测试（38 项断言）
+      - name: E2E 测试（45 项断言）
         run: HOST=http://127.0.0.1:3100 npm test
 
       - name: 失败时输出服务端日志

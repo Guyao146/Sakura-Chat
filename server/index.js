@@ -10,6 +10,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
 const config = require('./config');
+const system = require('./system');
+
+// 系统账号：文件传输助手（默认与所有用户互为好友，含老库迁移补建）
+system.ensureSystemUser();
+system.ensureAllUsersFriendSystem();
+
 const { auth } = require('./middleware');
 const { attach } = require('./ws');
 

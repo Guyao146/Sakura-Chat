@@ -2,21 +2,22 @@
 
 const express = require('express');
 const { db, getUserById, safeUser } = require('../db');
+const { SYSTEM_USERNAME } = require('../system');
 const state = require('../state');
 const svc = require('../services');
 
 const router = express.Router();
 
-// 搜索用户（按用户名或昵称，排除自己）
+// 搜索用户（按用户名或昵称，排除自己与系统账号）
 router.get('/search', (req, res) => {
   const q = (req.query.q || '').trim();
   if (!q) return res.json({ users: [] });
   const like = '%' + q.replace(/[%_]/g, c => '\\' + c) + '%';
   const rows = db.prepare(`
     SELECT id, username, nickname, avatar, signature FROM users
-    WHERE id != ? AND (username LIKE ? ESCAPE '\\' OR nickname LIKE ? ESCAPE '\\')
+    WHERE id != ? AND username != ? AND (username LIKE ? ESCAPE '\\' OR nickname LIKE ? ESCAPE '\\')
     ORDER BY id LIMIT 20
-  `).all(req.user.id, like, like);
+  `).all(req.user.id, SYSTEM_USERNAME, like, like);
   const users = rows.map(r => ({
     ...safeUser(r),
     online: state.isOnline(r.id),

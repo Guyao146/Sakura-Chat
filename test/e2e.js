@@ -105,6 +105,21 @@ async function ensureUser(username, password, nickname) {
   reqs = (await http('GET', '/api/friends/requests', null, carol.token)).requests;
   await http('POST', '/api/friends/requests/' + reqs[0].id + '/accept', null, carol.token);
 
+  console.log('--- 文件传输助手（系统账号）---');
+  const aliceFriends = (await http('GET', '/api/friends', null, alice.token)).friends;
+  const helper = aliceFriends.find(f => f.username === 'filehelper');
+  check('新注册用户默认添加「文件传输助手」好友', !!helper && helper.nickname === '文件传输助手' && !!helper.avatar);
+  try {
+    await http('POST', '/api/auth/login', { username: 'filehelper', password: 'pass1234' });
+    check('系统账号拒绝登录', false);
+  } catch (e) { check('系统账号拒绝登录', true); }
+  const searched = (await http('GET', '/api/users/search?q=file', null, alice.token)).users;
+  check('用户搜索不到系统账号', !searched.some(u => u.username === 'filehelper'));
+  try {
+    await http('POST', '/api/friends/request', { userId: helper.id }, alice.token);
+    check('无法向系统账号重复发送好友请求', false);
+  } catch (e) { check('无法向系统账号重复发送好友请求', true); }
+
   console.log('--- 加密 WebSocket 通信 ---');
   const ca = await connect(alice.token, alice.sessionId, alice.sessionKey);
   const cb = await connect(bob.token, bob.sessionId, bob.sessionKey);
@@ -126,6 +141,15 @@ async function ensureUser(username, password, nickname) {
   await cb.send({ type: 'read', convId: singleConvId });
   const readEvt = await ca.wait(e => e.type === 'read' && e.convId === singleConvId);
   check('已读回执送达 Alice', !!readEvt);
+
+  // 发往文件传输助手：自动已送达 + 已读（系统账号永远在线应答）
+  const helperConvId = 'u_' + Math.min(alice.user.id, helper.id) + '_' + Math.max(alice.user.id, helper.id);
+  const hMsgId = 't_' + crypto.randomUUID();
+  ca.send({ type: 'chat', msg: { msgId: hMsgId, convType: 'single', to: helper.id, kind: 'text', content: { text: '传给助手' } } });
+  const hAck = await ca.wait(e => e.type === 'ack' && e.msgId === hMsgId);
+  check('发往文件传输助手的消息自动送达', hAck?.delivered === 1);
+  const hRead = await ca.wait(e => e.type === 'read' && e.convId === helperConvId);
+  check('发往文件传输助手的消息自动已读', !!hRead);
 
   ca.send({ type: 'typing', convId: singleConvId, typing: true });
   let typingOk = false;
@@ -287,6 +311,12 @@ async function ensureUser(username, password, nickname) {
   const rows = db.prepare("SELECT content_enc FROM messages WHERE conv_id = ? AND kind = 'text'").all(singleConvId);
   check('数据库中不存在明文聊天记录', !rows.some(r => r.content_enc.includes(secret)));
   db.close();
+
+  // 文件传输助手不可删除
+  try {
+    await http('DELETE', '/api/friends/' + helper.id, null, alice.token);
+    check('文件传输助手不可删除', false);
+  } catch (e) { check('文件传输助手不可删除', true); }
 
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
   ca.ws.close(); cb.ws.close(); cc.ws.close();

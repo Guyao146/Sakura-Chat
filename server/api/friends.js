@@ -3,6 +3,7 @@
 const express = require('express');
 const { db, singleConvId, safeUser, getUserById } = require('../db');
 const { friendList } = require('../services');
+const { isSystemId } = require('../system');
 const state = require('../state');
 const { insertSystemMessage } = require('../messaging');
 
@@ -34,6 +35,7 @@ router.post('/request', (req, res) => {
   const toId = Number(req.body.userId);
   const remark = typeof req.body.remark === 'string' ? req.body.remark.slice(0, 30) : '';
   if (!toId || toId === req.user.id) return res.status(400).json({ error: '无效的用户' });
+  if (isSystemId(toId)) return res.status(409).json({ error: '文件传输助手已是你的好友，直接开始聊天即可' });
   if (!getUserById(toId)) return res.status(404).json({ error: '用户不存在' });
 
   // 已经是好友
@@ -93,6 +95,7 @@ router.post('/requests/:id/reject', (req, res) => {
 router.delete('/:id', (req, res) => {
   const fid = Number(req.params.id);
   if (!fid) return res.status(400).json({ error: '无效的用户' });
+  if (isSystemId(fid)) return res.status(400).json({ error: '文件传输助手不可删除' });
   db.prepare(`
     DELETE FROM friendships
     WHERE ((user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)) AND status = 1

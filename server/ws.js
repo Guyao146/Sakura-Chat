@@ -12,6 +12,7 @@ const { decrypt, encrypt, encryptMessageContent } = require('./crypto');
 const { db, singleConvId, groupConvId, getUserById } = require('./db');
 const svc = require('./services');
 const { insertSystemMessage } = require('./messaging');
+const { isSystemId } = require('./system');
 const config = require('./config');
 
 const KINDS = new Set(['text', 'image', 'emoji', 'file', 'voice', 'sticker']);
@@ -192,6 +193,8 @@ function handleChat(ws, p) {
       replyTo, replySnip, forwardFrom, ats.length ? JSON.stringify(ats) : null);
   const id = Number(info.lastInsertRowid);
 
+  const toSystem = convType === 'single' && isSystemId(receiverId);   // 发往「文件传输助手」
+
   const recipients = convType === 'single'
     ? [receiverId]
     : svc.groupMemberIds(groupId).filter(u => u !== userId);
@@ -204,6 +207,7 @@ function handleChat(ws, p) {
     ats: ats.length ? ats : null,
   });
   for (const uid of recipients) {
+    if (isSystemId(uid)) continue;                  // 系统账号不累积未读、不推送
     unreadStmt.run(uid, convId);
     state.sendToUser(uid, { type: 'message', msg: vo });
   }
@@ -212,10 +216,18 @@ function handleChat(ws, p) {
   if (convType === 'single' && state.isOnline(receiverId)) {
     db.prepare('UPDATE messages SET delivered = 1 WHERE id = ?').run(id);
     delivered = 1;
+  } else if (toSystem) {
+    // 文件传输助手：消息落库即「已送达 + 已读」
+    const nowTs = Date.now();
+    db.prepare('UPDATE messages SET delivered = 1, read_at = ? WHERE id = ?').run(nowTs, id);
+    delivered = 1;
   }
   send(ws, { type: 'ack', msgId: m.msgId, serverId: id, ts, status: 'sent', delivered });
   if (delivered && convType === 'single') {
     send(ws, { type: 'status', convId, msgId: m.msgId, status: 'delivered', ts });
+  }
+  if (toSystem) {
+    send(ws, { type: 'read', convId, ts: Date.now(), count: 1 });
   }
 }
 

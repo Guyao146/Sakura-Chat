@@ -5,6 +5,7 @@ const token = require('../token');
 const { auth } = require('../middleware');
 const { genId, genSessionKey, makeSalt, hashPassword, verifyPassword } = require('../crypto');
 const { db, getUserByUsername, getUserById, safeUser } = require('../db');
+const { ensureFriendWithSystem, isSystemUsername } = require('../system');
 const state = require('../state');
 
 const router = express.Router();
@@ -38,6 +39,7 @@ router.post('/register', (req, res) => {
     'INSERT INTO users (username, nickname, password_hash, salt, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)'
   ).run(username, nick, hashPassword(password, salt), salt, now, now);
   const user = safeUser(getUserById(info.lastInsertRowid));
+  ensureFriendWithSystem(user.id);   // 自动成为「文件传输助手」好友
   res.json({ message: '注册成功', user });
 });
 
@@ -45,6 +47,7 @@ router.post('/register', (req, res) => {
 router.post('/login', (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: '请输入用户名和密码' });
+  if (isSystemUsername(username)) return res.status(403).json({ error: '该账号不可登录' });
   const u = getUserByUsername(username);
   if (!u || !verifyPassword(password, u.salt, u.password_hash)) {
     return res.status(401).json({ error: '用户名或密码错误' });
