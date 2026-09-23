@@ -265,7 +265,16 @@
 .input-area {
   display: flex; align-items: flex-end; gap: 8px; padding: 10px 14px 14px;
   border-top: 1px solid var(--border); background: #fff; flex-shrink: 0;
+  position: relative;
 }
+/* 输入框顶部拖拽把手（调整输入框高度，不影响布局） */
+.input-resizer {
+  position: absolute; top: 0; left: 14px; right: 14px; height: 5px;
+  cursor: row-resize; border-radius: 3px; background: transparent;
+  transition: background .15s ease; z-index: 30;
+}
+.input-resizer:hover { background: rgba(7, 193, 96, .3); }
+.input-resizer.dragging { background: var(--primary); }
 .icon-btn {
   border: none; background: none; cursor: pointer; font-size: 20px; line-height: 1;
   padding: 6px; border-radius: 8px; transition: background .15s ease, transform .15s ease;
@@ -274,7 +283,7 @@
 .icon-btn:active { transform: scale(.88); }
 #msg-input {
   flex: 1; border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px;
-  font-size: 14px; resize: none; max-height: 120px; line-height: 1.4;
+  font-size: 14px; line-height: 1.4; box-sizing: border-box; overflow-y: hidden;
   transition: border-color .18s ease, box-shadow .18s ease;
   font-family: inherit; color: var(--text-main);
 }

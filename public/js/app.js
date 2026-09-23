@@ -31,6 +31,8 @@ const state = {
 let lastConvIds = [];          // 上次渲染的会话 id 列表，用于「新增会话」出现动画
 let ctxMenu = null;            // 当前打开的右键/长按菜单
 let statusInited = false;      // 在线状态是否已初始化
+const INPUT_H_KEY = 'sakura-input-height';   // 输入框基准高度（localStorage）
+let inputBaseH = 40;           // 输入框基准高度：单行约 40px，可由用户拖拽调节
 
 export async function initApp({ token, user, sessionId, sessionKey }) {
   state.me = user;
@@ -43,6 +45,8 @@ export async function initApp({ token, user, sessionId, sessionKey }) {
   ensureMyStatus();
   applySidebarWidth();
   bindSidebarResizer();
+  applyInputHeight();
+  bindInputResizer();
 
   state.socket = new ChatSocket({
     token, sessionId, sessionKey,
@@ -98,6 +102,7 @@ window.addEventListener('resize', () => {
     document.body.classList.remove('show-sidebar'); // 回到桌面端，恢复双栏
     applySidebarWidth();
   }
+  applyInputHeight();   // 输入框基准高度按新视口重新 clamp，并按内容重算
 });
 
 function bindSidebarResizer() {
@@ -131,6 +136,55 @@ function bindSidebarResizer() {
     window.addEventListener('pointerup', onUp);
   };
   resizer.addEventListener('pointerdown', onDown);
+}
+
+/* ---------------- 输入框高度：自适应 + 用户可拖拽 ---------------- */
+
+/** 输入框高度上限：视口的 40%，并限制在 [120, 360]px，避免小屏下挤压消息列表 */
+function inputMaxH() {
+  return Math.max(120, Math.min(360, window.innerHeight * 0.4));
+}
+
+/** 读取用户保存的基准高度并按当前视口 clamp，随后按内容重算高度 */
+function applyInputHeight() {
+  const v = parseInt(localStorage.getItem(INPUT_H_KEY) || '', 10);
+  if (Number.isFinite(v)) inputBaseH = Math.min(Math.max(v, 40), inputMaxH());
+  const input = $('#msg-input');
+  if (input) autoResize(input);
+}
+
+/** 输入框顶部把手：上下拖动改变基准高度，记忆到 localStorage */
+function bindInputResizer() {
+  const resizer = $('#input-resizer');
+  const input = $('#msg-input');
+  if (!resizer || !input) return;
+
+  let startY = 0, startH = 0;
+  const onMove = (e) => {
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+    inputBaseH = Math.min(inputMaxH(), Math.max(40, startH + (y - startY)));
+    autoResize(input);
+  };
+  const onUp = () => {
+    resizer.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem(INPUT_H_KEY, String(inputBaseH));
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  };
+  resizer.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch') return;           // 触屏不拖拽，避免与手势冲突
+    if (window.innerWidth <= 1020) return;           // 与侧边栏一致：窄屏不拖拽
+    e.preventDefault();
+    startY = e.clientY;
+    startH = inputBaseH;
+    resizer.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
 }
 
 /* ---------------- 基础数据 ---------------- */
@@ -648,7 +702,12 @@ function renderMessages(preservePos = false, animateLast = false) {
 
 function autoResize(el) {
   el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  const maxH = inputMaxH();
+  // 高度 = 内容高度与用户基准高度取大，整体不超过视口上限
+  const h = Math.min(Math.max(el.scrollHeight, inputBaseH), maxH);
+  el.style.height = h + 'px';
+  // 触及上限才允许滚动，否则始终完整显示内容
+  el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
 }
 
 async function markActiveConvRead() {
