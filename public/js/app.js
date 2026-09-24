@@ -31,10 +31,10 @@ const state = {
 let lastConvIds = [];          // 上次渲染的会话 id 列表，用于「新增会话」出现动画
 let ctxMenu = null;            // 当前打开的右键/长按菜单
 let statusInited = false;      // 在线状态是否已初始化
-const INPUT_H_KEY = 'sakura-input-height';   // 输入框自定义高度（localStorage）；0/未存 = 默认占满剩余空间
-const MSG_LIST_MIN = 120;                    // 消息列表最小保留高度，保证输入框最大也看得见最近消息
-const INPUT_MIN = 40;                        // 输入框最小高度（单行）
-let inputBaseH = 0;                          // 用户调节的基准高度；0 = 默认占满
+const INPUT_H_KEY = 'sakura-input-height-v2';   // 用户拖拽设定的输入框高度；未存 = 单行默认（v2：弃用旧版"占满"脏值）
+const MSG_LIST_MIN = 120;                    // 消息列表最小保留高度（仅文档说明，实际由 flex 引擎保证）
+const INPUT_MIN = 40;                        // 输入框最小/默认高度（单行）
+let inputBaseH = INPUT_MIN;                  // 输入框基准高度：默认单行，用户可向上拖大
 
 export async function initApp({ token, user, sessionId, sessionKey }) {
   state.me = user;
@@ -104,7 +104,7 @@ window.addEventListener('resize', () => {
     document.body.classList.remove('show-sidebar'); // 回到桌面端，恢复双栏
     applySidebarWidth();
   }
-  applyInputHeight();   // 输入框基准高度按新视口重新 clamp，并按内容重算
+  applyInputHeight();   // 视口变化后按新高度重算输入框（基准高度不变，内容自适应）
 });
 
 function bindSidebarResizer() {
@@ -140,52 +140,17 @@ function bindSidebarResizer() {
   resizer.addEventListener('pointerdown', onDown);
 }
 
-/* ---------------- 输入框高度：默认占满剩余空间 + 可拖拽调节 ---------------- */
+/* ---------------- 输入框高度：默认单行、随内容自适应、可向上拖大 ---------------- */
 
-/**
- * 输入框可用剩余高度（即"默认占满"时的高度）：
- * chat-main 高度 − 固定 chrome（标题栏/typing/引用栏/转发栏/输入区内边距）− 消息列表保留高度。
- * 未打开会话（chat-main 隐藏）时返回 0，调用方走兜底。
- */
-function inputAvailH() {
-  const main = $('#chat-main');
-  if (!main || main.hidden) return 0;
-  let chrome = 24;                                  // input-area 上下 padding（10 + 14）
-  chrome += main.querySelector('.chat-header')?.offsetHeight || 56;
-  const typing = $('#typing-hint');
-  if (typing && !typing.hidden) chrome += typing.offsetHeight;
-  const draft = $('#reply-bar');
-  if (draft && !draft.hidden) chrome += draft.offsetHeight + 8;   // + margin-bottom
-  const fwd = $('#forward-bar');
-  if (fwd && !fwd.hidden) chrome += fwd.offsetHeight + 8;
-  return Math.max(INPUT_MIN, main.clientHeight - chrome - MSG_LIST_MIN);
-}
-
-/** 输入框高度上限 = 剩余空间；聊天未打开时用视口兜底 */
-function inputMaxH() {
-  const h = inputAvailH();
-  return h > 0 ? h : Math.min(360, window.innerHeight * 0.4);
-}
-
-/** 当前生效的基准高度：用户调过就用用户值，否则默认占满剩余空间 */
-function currentBaseH() {
-  return inputBaseH > 0 ? inputBaseH : inputMaxH();
-}
-
-/** 读取用户保存的高度（无则默认占满），按当前剩余空间 clamp 后重算 */
+/** 读取用户拖拽设定的基准高度（无则单行）；换过 key，旧版"占满"存的脏值自动失效 */
 function applyInputHeight() {
   const v = parseInt(localStorage.getItem(INPUT_H_KEY) || '', 10);
-  const maxH = inputMaxH();
-  if (Number.isFinite(v) && v > 0) {
-    inputBaseH = Math.min(Math.max(v, INPUT_MIN), maxH);
-  } else {
-    inputBaseH = 0;                                 // 默认占满
-  }
+  inputBaseH = Number.isFinite(v) && v > INPUT_MIN ? v : INPUT_MIN;
   const input = $('#msg-input');
   if (input) autoResize(input);
 }
 
-/** 输入框顶部把手：上下拖动调节高度（范围 40px ~ 占满剩余空间），记忆到 localStorage */
+/** 输入框顶部把手：向上拖变大、向下拖变小；设定的高度记忆到 localStorage */
 function bindInputResizer() {
   const resizer = $('#input-resizer');
   const input = $('#msg-input');
@@ -194,18 +159,16 @@ function bindInputResizer() {
   let startY = 0, startH = 0;
   const onMove = (e) => {
     const y = e.touches ? e.touches[0].clientY : e.clientY;
-    const maxH = inputMaxH();
-    inputBaseH = Math.min(maxH, Math.max(INPUT_MIN, startH + (y - startY)));
+    // 把手在顶部：光标上移(y 变小) → 高度变大，下移 → 变小
+    inputBaseH = Math.max(INPUT_MIN, startH + (startY - y));
     autoResize(input);
   };
   const onUp = () => {
     resizer.classList.remove('dragging');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    if (inputBaseH >= inputMaxH()) {
-      // 拖到顶 = 占满剩余空间，即默认态：清除记忆
-      inputBaseH = 0;
-      localStorage.removeItem(INPUT_H_KEY);
+    if (inputBaseH <= INPUT_MIN) {
+      localStorage.removeItem(INPUT_H_KEY);           // 回到单行默认：清除记忆
     } else {
       localStorage.setItem(INPUT_H_KEY, String(inputBaseH));
     }
@@ -213,11 +176,11 @@ function bindInputResizer() {
     window.removeEventListener('pointerup', onUp);
   };
   const onDown = (e) => {
-    if (e.pointerType === 'touch') return;           // 触屏不拖拽，避免与手势冲突
-    if (window.innerWidth <= 1020) return;           // 与侧边栏一致：窄屏不拖拽
+    if (e.pointerType === 'touch') return;            // 触屏不拖拽，避免与手势冲突
+    if (window.innerWidth <= 1020) return;            // 与侧边栏一致：窄屏不拖拽
     e.preventDefault();
     startY = e.clientY;
-    startH = currentBaseH();
+    startH = input.getBoundingClientRect().height;    // 从当前真实高度起拖，手感连续
     resizer.classList.add('dragging');
     document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
@@ -225,9 +188,9 @@ function bindInputResizer() {
     window.addEventListener('pointerup', onUp);
   };
   resizer.addEventListener('pointerdown', onDown);
-  // 双击把手：恢复「默认占满剩余空间」
+  // 双击把手：恢复单行默认高度
   resizer.addEventListener('dblclick', () => {
-    inputBaseH = 0;
+    inputBaseH = INPUT_MIN;
     localStorage.removeItem(INPUT_H_KEY);
     applyInputHeight();
   });
@@ -383,7 +346,7 @@ async function openConv(convId) {
   }
   renderMessages(false);
   markActiveConvRead();
-  applyInputHeight();   // 会话打开后 chat-main 可见：应用默认占满/用户记忆高度
+  applyInputHeight();   // 会话打开后 chat-main 可见：应用用户记忆高度（无则单行）
   $('#msg-input').focus();
 }
 
@@ -749,12 +712,11 @@ function renderMessages(preservePos = false, animateLast = false) {
 
 function autoResize(el) {
   el.style.height = 'auto';
-  const maxH = inputMaxH();
-  // 高度 = 内容高度与生效基准取大（默认占满），整体不超过剩余空间
-  const h = Math.min(Math.max(el.scrollHeight, currentBaseH()), maxH);
+  // 高度 = max(单行内容高度, 用户拖大的基准)；溢出上限交给 CSS max-height 与 flex 布局
+  const h = Math.max(el.scrollHeight, inputBaseH);
   el.style.height = h + 'px';
-  // 触及上限才允许滚动，否则始终完整显示内容
-  el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
+  // 内容超过当前可见高度才滚动
+  el.style.overflowY = el.scrollHeight > el.clientHeight ? 'auto' : 'hidden';
 }
 
 async function markActiveConvRead() {

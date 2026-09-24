@@ -263,7 +263,7 @@
 
 /* ---- 输入区 ---- */
 .input-area {
-  display: flex; align-items: flex-end; gap: 8px; padding: 10px 14px 14px;
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 14px;
   border-top: 1px solid var(--border); background: #fff; flex-shrink: 0;
   position: relative;
 }
@@ -284,6 +284,9 @@
 #msg-input {
   flex: 1; border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px;
   font-size: 14px; line-height: 1.4; box-sizing: border-box; overflow-y: hidden;
+  resize: none;                                     // 禁用原生右下角拖拽，统一用顶部把手
+  /* 视口级兜底：无论 JS 算出多大，输入框绝不超出屏幕；布局上消息列表会优先让位 */
+  max-height: calc(100vh - 220px);
   transition: border-color .18s ease, box-shadow .18s ease;
   font-family: inherit; color: var(--text-main);
 }
