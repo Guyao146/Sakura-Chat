@@ -142,12 +142,48 @@ function bindSidebarResizer() {
 
 /* ---------------- 输入框高度：默认单行、随内容自适应、可向上拖大 ---------------- */
 
+/**
+ * 输入框高度上限：保证消息列表至少保留 MSG_LIST_MIN 可见，且不超视口 60%。
+ * 通过实测 chrome（标题栏/typing/输入区内非文本框部分）计算，不写死像素。
+ */
+function inputMaxH() {
+  const main = $('#chat-main');
+  if (!main || main.hidden) return Math.min(300, window.innerHeight * 0.4);
+  const header = main.querySelector('.chat-header')?.offsetHeight ?? 56;
+  const typing = $('#typing-hint');
+  const typingH = (typing && !typing.hidden) ? typing.offsetHeight : 0;
+  const area = $('.input-area');
+  // 输入区内非文本框的固定部分（按钮行/内边距/引用栏）= 输入区整体高度 − 文本框高度
+  const extras = area ? Math.max(0, area.offsetHeight - ($('#msg-input')?.getBoundingClientRect().height || 0)) : 0;
+  const avail = main.clientHeight - header - typingH - extras - MSG_LIST_MIN;
+  return Math.max(INPUT_MIN, Math.min(avail, Math.round(window.innerHeight * 0.6)));
+}
+
+/** 表情/贴纸/录音面板锚定在输入区上方：把输入区实际高度写入 CSS 变量，面板随输入框长高而上移 */
+function syncInputAreaH() {
+  const area = $('.input-area');
+  const main = $('#chat-main');
+  if (area && main) main.style.setProperty('--input-area-h', (area.offsetHeight + 6) + 'px');
+}
+
 /** 读取用户拖拽设定的基准高度（无则单行）；换过 key，旧版"占满"存的脏值自动失效 */
 function applyInputHeight() {
   const v = parseInt(localStorage.getItem(INPUT_H_KEY) || '', 10);
   inputBaseH = Number.isFinite(v) && v > INPUT_MIN ? v : INPUT_MIN;
   const input = $('#msg-input');
   if (input) autoResize(input);
+}
+
+/**
+ * 输入框自适应：内容多时长高，不小于用户设定的基准高度，且不超 inputMaxH。
+ * @param userSizing 用户正在拖拽把手时传 true：高度完全跟随指针（可小于内容高度，内部滚动）
+ */
+function autoResize(el, userSizing = false) {
+  el.style.height = 'auto';
+  const want = userSizing ? inputBaseH : Math.max(el.scrollHeight, inputBaseH);
+  el.style.height = Math.min(want, inputMaxH()) + 'px';
+  el.style.overflowY = el.scrollHeight > el.clientHeight ? 'auto' : 'hidden';
+  syncInputAreaH();
 }
 
 /** 输入框顶部把手：向上拖变大、向下拖变小；设定的高度记忆到 localStorage */
@@ -159,9 +195,9 @@ function bindInputResizer() {
   let startY = 0, startH = 0;
   const onMove = (e) => {
     const y = e.touches ? e.touches[0].clientY : e.clientY;
-    // 把手在顶部：光标上移(y 变小) → 高度变大，下移 → 变小
-    inputBaseH = Math.max(INPUT_MIN, startH + (startY - y));
-    autoResize(input);
+    // 把手在顶部：光标上移(y 变小) → 高度变大，下移 → 变小；钳制在 [单行, 上限]
+    inputBaseH = Math.max(INPUT_MIN, Math.min(inputMaxH(), startH + (startY - y)));
+    autoResize(input, true);
   };
   const onUp = () => {
     resizer.classList.remove('dragging');
@@ -178,9 +214,16 @@ function bindInputResizer() {
   const onDown = (e) => {
     if (e.pointerType === 'touch') return;            // 触屏不拖拽，避免与手势冲突
     if (window.innerWidth <= 1020) return;            // 与侧边栏一致：窄屏不拖拽
+    if (e.detail >= 2) {                              // 连击 ≥2 次直接走双击复位，避免拖拽与双击互相吞事件
+      inputBaseH = INPUT_MIN;
+      localStorage.removeItem(INPUT_H_KEY);
+      applyInputHeight();
+      return;
+    }
     e.preventDefault();
     startY = e.clientY;
-    startH = input.getBoundingClientRect().height;    // 从当前真实高度起拖，手感连续
+    // 从「基准高度」起拖而非内容撑开的当前高度，保证拖动手感与输入内容解耦
+    startH = inputBaseH;
     resizer.classList.add('dragging');
     document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
@@ -708,15 +751,6 @@ function renderMessages(preservePos = false, animateLast = false) {
   } else {
     list.scrollTop = list.scrollHeight;
   }
-}
-
-function autoResize(el) {
-  el.style.height = 'auto';
-  // 高度 = max(单行内容高度, 用户拖大的基准)；溢出上限交给 CSS max-height 与 flex 布局
-  const h = Math.max(el.scrollHeight, inputBaseH);
-  el.style.height = h + 'px';
-  // 内容超过当前可见高度才滚动
-  el.style.overflowY = el.scrollHeight > el.clientHeight ? 'auto' : 'hidden';
 }
 
 async function markActiveConvRead() {
