@@ -94,6 +94,8 @@ function applySidebarWidth() {
 }
 
 // 窗口尺寸变化时：桌面↔移动端切换，纠正内联宽度并自动显隐侧边栏
+let resizeTimer = null;
+let inputDragging = false;       // 输入框拖拽中标记，防止 resize 回调干扰正在调节的高度
 window.addEventListener('resize', () => {
   const mobile = window.innerWidth <= 1020;
   const bar = document.querySelector('.sidebar');
@@ -104,7 +106,11 @@ window.addEventListener('resize', () => {
     document.body.classList.remove('show-sidebar'); // 回到桌面端，恢复双栏
     applySidebarWidth();
   }
-  applyInputHeight();   // 视口变化后按新高度重算输入框（基准高度不变，内容自适应）
+  // 防抖：拖动窗口过程中只在停顿后重算一次，避免高频布局计算卡顿
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (!inputDragging) applyInputHeight();       // 视口变化后按新上限重算（基准高度不变，仅 clamp）
+  }, 150);
 });
 
 function bindSidebarResizer() {
@@ -166,10 +172,17 @@ function syncInputAreaH() {
   if (area && main) main.style.setProperty('--input-area-h', (area.offsetHeight + 6) + 'px');
 }
 
-/** 读取用户拖拽设定的基准高度（无则单行）；换过 key，旧版"占满"存的脏值自动失效 */
-function applyInputHeight() {
-  const v = parseInt(localStorage.getItem(INPUT_H_KEY) || '', 10);
-  inputBaseH = Number.isFinite(v) && v > INPUT_MIN ? v : INPUT_MIN;
+/**
+ * 应用输入框基准高度：读取持久化值并 clamp 到当前可用上限。
+ * @param restore true=从 localStorage 恢复（如启动/打开会话/窗口变化）；
+ *                false=仅按当前 inputBaseH 重算（拖拽中调用，避免覆盖正在调节的状态）
+ */
+function applyInputHeight(restore = true) {
+  if (restore) {
+    const v = parseInt(localStorage.getItem(INPUT_H_KEY) || '', 10);
+    inputBaseH = Number.isFinite(v) && v > INPUT_MIN ? v : INPUT_MIN;
+  }
+  inputBaseH = Math.min(inputBaseH, inputMaxH());
   const input = $('#msg-input');
   if (input) autoResize(input);
 }
@@ -185,7 +198,6 @@ function autoResize(el, userSizing = false) {
   el.style.overflowY = el.scrollHeight > el.clientHeight ? 'auto' : 'hidden';
   syncInputAreaH();
 }
-
 /** 输入框顶部把手：向上拖变大、向下拖变小；设定的高度记忆到 localStorage */
 function bindInputResizer() {
   const resizer = $('#input-resizer');
@@ -200,6 +212,7 @@ function bindInputResizer() {
     autoResize(input, true);
   };
   const onUp = () => {
+    inputDragging = false;
     resizer.classList.remove('dragging');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
@@ -214,16 +227,17 @@ function bindInputResizer() {
   const onDown = (e) => {
     if (e.pointerType === 'touch') return;            // 触屏不拖拽，避免与手势冲突
     if (window.innerWidth <= 1020) return;            // 与侧边栏一致：窄屏不拖拽
-    if (e.detail >= 2) {                              // 连击 ≥2 次直接走双击复位，避免拖拽与双击互相吞事件
+    if (e.detail >= 2) {                              // 连击 ≥2 次：复位（浏览器会随后派发 dblclick，统一在此处理，不再重复注册 dblclick）
       inputBaseH = INPUT_MIN;
       localStorage.removeItem(INPUT_H_KEY);
-      applyInputHeight();
+      applyInputHeight(false);
       return;
     }
     e.preventDefault();
     startY = e.clientY;
     // 从「基准高度」起拖而非内容撑开的当前高度，保证拖动手感与输入内容解耦
     startH = inputBaseH;
+    inputDragging = true;
     resizer.classList.add('dragging');
     document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
@@ -231,12 +245,6 @@ function bindInputResizer() {
     window.addEventListener('pointerup', onUp);
   };
   resizer.addEventListener('pointerdown', onDown);
-  // 双击把手：恢复单行默认高度
-  resizer.addEventListener('dblclick', () => {
-    inputBaseH = INPUT_MIN;
-    localStorage.removeItem(INPUT_H_KEY);
-    applyInputHeight();
-  });
 }
 
 /* ---------------- 基础数据 ---------------- */
