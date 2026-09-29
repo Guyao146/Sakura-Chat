@@ -94,13 +94,16 @@ async function ensureUser(username, password, nickname) {
   check('JWT 为 payload.signature 结构', alice.token.includes('.') && alice.token.split('.').length === 2);
 
   console.log('--- 好友关系 ---');
-  await http('POST', '/api/friends/request', { userId: bob.user.id }, alice.token);
+  await http('POST', '/api/friends/request', { userId: bob.user.id, remark: '鲍勃备注' }, alice.token);
   let reqs = (await http('GET', '/api/friends/requests', null, bob.token)).requests;
   check('Bob 收到好友请求', reqs.length === 1 && reqs[0].username === alice.user.username);
   await http('POST', '/api/friends/requests/' + reqs[0].id + '/accept', null, bob.token);
   const convs = (await http('GET', '/api/conversations', null, alice.token)).conversations;
   check('Alice 会话列表出现 Bob', convs.some(c => c.convType === 'single' && c.peer.id === bob.user.id));
   const singleConvId = convs.find(c => c.convType === 'single' && c.peer.id === bob.user.id).convId;
+  check('非空备注不会导致重复会话', convs.filter(c => c.convId === singleConvId).length === 1);
+  const markedFriends = (await http('GET', '/api/friends', null, alice.token)).friends.filter(f => f.id === bob.user.id);
+  check('好友去重且保留本人备注', markedFriends.length === 1 && markedFriends[0].remark === '鲍勃备注');
   await http('POST', '/api/friends/request', { userId: carol.user.id }, alice.token);
   reqs = (await http('GET', '/api/friends/requests', null, carol.token)).requests;
   await http('POST', '/api/friends/requests/' + reqs[0].id + '/accept', null, carol.token);
@@ -277,6 +280,8 @@ async function ensureUser(username, password, nickname) {
   console.log('--- 服务端聊天记录搜索（依赖服务端解密能力）---');
   const { results } = await http('GET', '/api/conversations/' + singleConvId + '/search?q=' + encodeURIComponent('加密聊天记录'), null, alice.token);
   check('搜索命中加密聊天记录', results.some(r => r.content.text === secret));
+  const recalledSearch = await http('GET', '/api/conversations/' + singleConvId + '/search?q=' + encodeURIComponent('待撤回消息'), null, alice.token);
+  check('会话内搜索不泄露已撤回消息', !recalledSearch.results.some(m => m.msgId === msgId2));
 
   console.log('--- 引用回复 / 表情反应 / 消息编辑 / 拍一拍 ---');
   // 引用回复
@@ -340,6 +345,9 @@ async function ensureUser(username, password, nickname) {
   // 全局搜索
   const all = (await http('GET', '/api/conversations/search/all?q=' + encodeURIComponent('加密聊天记录'), null, alice.token));
   check('全局搜索命中消息', Array.isArray(all.messages) && all.messages.some(m => (m.snip || '').includes('加密聊天记录')));
+  check('全局搜索显示正确的私聊对象名称', all.messages.find(m => m.msgId === msgId)?.convName === bob.user.nickname);
+  const helperSearch = await http('GET', '/api/conversations/search/all?q=filehelper', null, alice.token);
+  check('全局搜索的用户结果也排除系统账号', !helperSearch.users.some(u => u.username === 'filehelper'));
 
   // 收藏
   const saved = await http('POST', '/api/stickers/saved', { msg: { msgId: repId, kind: 'text', content: { text: '被引用的原话' }, snip: '被引用的原话' } }, alice.token);

@@ -10,9 +10,13 @@ const state = require('./state');
 function friendList(userId) {
   return db.prepare(`
     SELECT f.friend_id AS uid, f.remark FROM friendships f WHERE f.user_id = ? AND f.status = 1
-    UNION
-    SELECT f.user_id AS uid, '' AS remark FROM friendships f WHERE f.friend_id = ? AND f.status = 1
-  `).all(userId, userId);
+    UNION ALL
+    SELECT f.user_id AS uid, '' AS remark FROM friendships f
+    WHERE f.friend_id = ? AND f.status = 1 AND NOT EXISTS (
+      SELECT 1 FROM friendships own
+      WHERE own.user_id = ? AND own.friend_id = f.user_id AND own.status = 1
+    )
+  `).all(userId, userId, userId);
 }
 
 function friendIds(userId) {

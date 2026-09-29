@@ -38,8 +38,12 @@ async function run(script, env) {
       await sleep(100);
     }
     if (!ready) throw new Error('测试服务启动超时');
+    await run('drafts.test.mjs', env);
     await run('e2e.js', env);
-    if (process.argv.includes('--browser')) await run('browser-input-height.mjs', env);
+    if (process.argv.includes('--browser')) {
+      await run('browser-input-height.mjs', env);
+      await run('browser-chat.mjs', env);
+    }
   } catch (e) {
     console.error(log);
     throw e;

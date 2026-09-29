@@ -6,6 +6,7 @@ const { canAccessConv, convParticipants, friendList, groupIdsOf } = require('../
 const { decryptMessageContent } = require('../crypto');
 const state = require('../state');
 const config = require('../config');
+const { isSystemUsername } = require('../system');
 
 const router = express.Router();
 
@@ -59,11 +60,7 @@ router.get('/', (req, res) => {
   const me = req.user.id;
   const items = [];
 
-  const friends = db.prepare(`
-    SELECT friend_id AS uid, remark FROM friendships WHERE user_id = ? AND status = 1
-    UNION
-    SELECT user_id AS uid, '' AS remark FROM friendships WHERE friend_id = ? AND status = 1
-  `).all(me, me);
+  const friends = friendList(me);
   for (const f of friends) {
     const convId = singleConvId(me, f.uid);
     const last = lastMessageOf(convId);
@@ -223,7 +220,7 @@ router.get('/search/all', (req, res) => {
      WHERE username LIKE ? OR nickname LIKE ? LIMIT 20`
   ).all('%' + q + '%', '%' + q + '%');
   for (const u of userRows) {
-    if (u.id === uid) continue;
+    if (u.id === uid || isSystemUsername(u.username)) continue;
     users.push(safeUser(u));
   }
 
@@ -244,8 +241,8 @@ function convNameOf(m, uid) {
     return g ? g.name : '群聊';
   }
   // 单聊：从 convId（u_min_max）解析对端 id
-  const parts = String(m.convId || '').split('_').map(Number);
-  const peerId = parts.length === 3 && parts.every(Number.isFinite)
+  const parts = String(m.convId || '').split('_').slice(1).map(Number);
+  const peerId = parts.length === 2 && parts.every(Number.isFinite)
     ? parts.find(x => x !== uid) : null;
   if (!peerId) return '私聊';
   const f = db.prepare('SELECT nickname FROM users WHERE id = ?').get(peerId);
@@ -260,7 +257,7 @@ router.get('/:convId/search', (req, res) => {
   if (!canAccessConv(req.user.id, convId)) {
     return res.status(403).json({ error: '无权访问该会话' });
   }
-  const rows = db.prepare('SELECT * FROM messages WHERE conv_id = ? ORDER BY id ASC').all(convId);
+  const rows = db.prepare('SELECT * FROM messages WHERE conv_id = ? AND revoked = 0 ORDER BY id ASC').all(convId);
   const results = [];
   for (const m of rows) {
     if (m.kind !== 'text' && m.kind !== 'emoji') continue;

@@ -9,6 +9,16 @@ export function escapeHtml(str) {
   }[c]));
 }
 
+/** URL 协议白名单。HTML/CSS 转义仍由具体输出位置负责。 */
+export function safeUrl(value, allowImageData = false) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  if (allowImageData && /^data:image\/(?:png|jpeg|gif|webp|svg\+xml)[;,]/i.test(value)) return value;
+  try {
+    const url = new URL(value, location.origin);
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+  } catch (_) { return ''; }
+}
+
 const AVATAR_COLORS = [
   '#07c160', '#5b8def', '#f5a623', '#fa5151', '#7c6cf0',
   '#00b578', '#ff8f4b', '#3d8bff', '#c47bff', '#4ba4ff',
@@ -24,8 +34,10 @@ export function avatarColor(seed) {
 /** 头像 HTML：有图片用图片，否则取昵称首字母 + 哈希底色 */
 export function avatarHtml(user, cls = '') {
   const name = user?.nickname || user?.username || '?';
-  if (user?.avatar) {
-    return `<div class="avatar ${cls}" style="background-image:url('${user.avatar}');background-color:#eee"></div>`;
+  const avatar = safeUrl(user?.avatar, true);
+  if (avatar) {
+    const style = 'background-image:url(' + JSON.stringify(avatar) + ');background-color:#eee';
+    return `<div class="avatar ${cls}" style="${escapeHtml(style)}"></div>`;
   }
   return `<div class="avatar ${cls}" style="background:${avatarColor(name)}">${escapeHtml(name[0].toUpperCase())}</div>`;
 }
@@ -152,22 +164,19 @@ export function renderMarkdown(text) {
 }
 
 function inlineMd(safe) {
-  let s = safe;
-  // 行内代码 `xxx`
-  s = s.replace(/`([^`]+)`/g, (_, c) => `<code class="md-icode">${c}</code>`);
-  // 粗体 **xxx**
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // 斜体 *xxx*
-  s = s.replace(/(^|[^\*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>');
-  // 删除线 ~~xxx~~
-  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-  // 链接 [文本](url)（仅 http/https，防 javascript:）
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  // 裸链接
-  s = s.replace(/(^|[\s(])((https?:\/\/)[^\s<)]+[^\s<).,!?;:'])/g,
-    '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
-  return s;
+  // 先隔离代码与链接，后续格式化不得修改已生成的 HTML 属性。
+  const tokens = [];
+  const hold = html => '\u0000' + (tokens.push(html) - 1) + '\u0000';
+  let s = safe.replace(/\u0000/g, '');
+  s = s.replace(/`([^`]+)`/g, (_, c) => hold(`<code class="md-icode">${c}</code>`));
+  s = s.replace(/\[([^\]\u0000]+)\]\((https?:\/\/[^\s)\u0000]+)\)/g,
+    (_, label, url) => hold(`<a href="${url}" target="_blank" rel="noopener">${label}</a>`));
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)\u0000]+)/g,
+    (_, prefix, url) => prefix + hold(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`));
+  s = s.replace(/\*\*([^*\u0000]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^\*])\*([^*\u0000]+)\*(?!\*)/g, '$1<em>$2</em>');
+  s = s.replace(/~~([^~\u0000]+)~~/g, '<del>$1</del>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, index) => tokens[Number(index)]);
 }
 
 /** 文件大小可读化 */

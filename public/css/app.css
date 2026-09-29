@@ -1,4 +1,5 @@
 [hidden] { display: none !important; }
+.draft-label { color: var(--danger); }
 .conv-list { flex: 1 1 0; min-height: 0; overflow-y: auto; }
 .conv-item {
   display: flex; align-items: center; padding: 10px 14px; cursor: pointer;
@@ -53,7 +54,7 @@
 .chat-title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-subtitle { font-size: 11px; color: var(--text-sub); height: 15px; }
 
-.msg-list { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 16px 18px 6px; background: var(--bg-chat); }
+.msg-list { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 34px 18px 6px; background: var(--bg-chat); }
 .msg-time { text-align: center; font-size: 11px; color: #b0b0b0; margin: 10px 0; animation: fadeIn .3s ease both; }
 .msg-system { text-align: center; font-size: 12px; color: #999; margin: 10px 0; animation: fadeIn .35s ease both; }
 .msg-row { display: flex; margin-bottom: 14px; align-items: flex-start; }
@@ -61,7 +62,7 @@
 /* 新消息出现动画（仅 JS 对新增消息添加） */
 .msg-row.msg-in { animation: fadeInUp .28s cubic-bezier(.2, .9, .3, 1.05) both; }
 .msg-row .avatar { width: 36px; height: 36px; border-radius: 10px; font-size: 14px; flex-shrink: 0; box-shadow: var(--shadow-sm); }
-.msg-body { margin: 0 10px; max-width: 60%; display: flex; flex-direction: column; }
+.msg-body { margin: 0 10px; max-width: 60%; display: flex; flex-direction: column; position: relative; }
 .msg-row.mine .msg-body { align-items: flex-end; }
 .msg-nickname { font-size: 11px; color: #999; margin-bottom: 3px; }
 .bubble {
@@ -78,17 +79,17 @@
 .msg-status.sending { color: #f5a623; }
 .msg-actions {
   position: absolute; top: -30px; right: 0; background: #333; border-radius: 6px;
-  display: none; gap: 2px; z-index: 5; padding: 2px;
+  display: none; flex-wrap: nowrap; gap: 2px; z-index: 5; padding: 2px;
 }
+.msg-actions.shown { display: flex; }
 .msg-row.mine:hover .msg-actions { display: flex; }
-.msg-actions button { color: #fff; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+.msg-actions button { color: #fff; font-size: 11px; padding: 3px 8px; border-radius: 4px; white-space: nowrap; }
 .msg-actions button:hover { background: #555; }
 .msg-recall { font-size: 12px; color: #999; background: #e8e8e8; padding: 5px 10px; border-radius: 8px; }
 
 /* 所有消息（含对方）hover 显示操作；位置左/右区分 */
-.msg-row:hover .msg-actions { display: flex; }
-.msg-row .msg-actions { right: auto; left: 0; }
-.msg-row.mine .msg-actions { left: auto; right: 0; }
+.msg-row:hover .msg-actions, .msg-row.hovered .msg-actions,
+.msg-row:focus-within .msg-actions, .msg-body:focus-within .msg-actions { display: flex; }
 
 /* ---- 引用回复卡片 ---- */
 .msg-reply {

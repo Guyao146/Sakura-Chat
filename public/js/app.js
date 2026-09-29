@@ -7,6 +7,8 @@ import { EMOJIS } from './lib/emoji.js';
 import { VoiceRecorder } from './lib/voice.js';
 import { CallManager } from './lib/call.js';
 import { bindResizeHandle } from './lib/resize.js';
+import { DraftStore } from './lib/drafts.js';
+import { safeUrl } from './lib/util.js';
 
 const state = {
   me: null,
@@ -17,7 +19,7 @@ const state = {
   messages: new Map(),        // convId -> [msg]
   msgMap: new Map(),          // msgId -> msg
   hasMore: new Map(),         // convId -> bool
-  loadingMore: false,
+  loadingMore: new Set(),
   friends: [],
   pendingRequests: [],
   users: new Map(),           // userId -> user（昵称/头像缓存）
@@ -32,6 +34,9 @@ const state = {
 let lastConvIds = [];          // 上次渲染的会话 id 列表，用于「新增会话」出现动画
 let ctxMenu = null;            // 当前打开的右键/长按菜单
 let statusInited = false;      // 在线状态是否已初始化
+let draftStore = null;
+let chatVersion = 0;           // 旧请求完成后不得覆盖新会话
+let searchVersion = 0;
 const INPUT_H_KEY = 'sakura-input-height-v2';   // 用户拖拽设定的输入框高度；未存 = 单行默认（v2：弃用旧版"占满"脏值）
 const MSG_LIST_MIN = 120;                    // 消息列表最小保留高度（仅文档说明，实际由 flex 引擎保证）
 const INPUT_MIN = 40;                        // 输入框最小/默认高度（单行）
@@ -39,6 +44,9 @@ let inputBaseH = INPUT_MIN;                  // 输入框基准高度：默认�
 
 export async function initApp({ token, user, sessionId, sessionKey }) {
   state.me = user;
+  let storage;
+  try { storage = window.sessionStorage; } catch (_) {}
+  draftStore = new DraftStore(user.id, storage);
   $('#login-view').hidden = true;
   $('#app-view').hidden = false;
   renderMyProfile();
@@ -71,11 +79,28 @@ export async function initApp({ token, user, sessionId, sessionKey }) {
 }
 
 function logout() {
+  draftStore?.clear();
+  draftStore = null;
   state.socket?.close();
   localStorage.removeItem('sc_token');
   setToken(null);
   location.reload();
 }
+
+function saveCurrentDraft() {
+  draftStore?.set(state.activeConvId, $('#msg-input').value, state.replyDraft);
+}
+
+function restoreDraft(convId) {
+  const draft = draftStore?.get(convId);
+  $('#msg-input').value = draft?.text || '';
+  state.replyDraft = draft?.reply || null;
+  state.forwardDraft = null;
+  $('#forward-bar').hidden = true;
+  renderReplyBar();
+}
+
+window.addEventListener('pagehide', saveCurrentDraft);
 
 /* ---------------- 侧边栏宽度拖拽（持久化） ---------------- */
 const SIDEBAR_W_KEY = 'sc_sidebar_width';
@@ -311,6 +336,10 @@ function convItemHtml(c, anim) {
   const name = c.convType === 'single' ? (c.peer.remark || c.peer.nickname) : c.group.name;
   const avatarUser = c.convType === 'single' ? c.peer : { nickname: c.group.name, avatar: c.group.avatar };
   const last = c.lastMessage;
+  const draft = draftStore?.get(c.convId);
+  const preview = draft
+    ? '<span class="draft-label">[草稿]</span> ' + escapeHtml(draft.text || '引用回复')
+    : escapeHtml(last ? previewText(last) : '开始聊天吧');
   return `<div class="conv-item ${isConvActive(c.convId) ? 'active' : ''} ${anim ? 'anim-in' : ''} ${c.pinned ? 'pinned' : ''}" data-convid="${c.convId}">
     <div class="conv-avatar-wrap" data-pat="${c.convType === 'single' ? c.peer.id : ''}">
       ${avatarHtml(avatarUser)}
@@ -323,7 +352,7 @@ function convItemHtml(c, anim) {
         <div class="conv-time">${last ? formatTime(last.createdAt) : ''}</div>
       </div>
       <div class="conv-bottom">
-        <div class="conv-last">${escapeHtml(last ? previewText(last) : '开始聊天吧')}</div>
+        <div class="conv-last">${preview}</div>
         ${c.unread ? `<span class="conv-unread ${c.muted ? 'muted-badge' : ''}">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}
       </div>
     </div>
@@ -348,17 +377,27 @@ function previewText(m) {
 async function openConv(convId) {
   const conv = convOf(convId);
   if (!conv) return;
-  // 切换会话前取消未完成的录音
+  const version = ++chatVersion;
+  ++searchVersion;
+  saveCurrentDraft();
+  if (state.activeConvId) state.socket?.send({ type: 'typing', convId: state.activeConvId, typing: false });
+  // 切换会话前取消未完成的录音；等待期间再次切换时，以最后一次操作为准。
   if (state.recorder?.recording) {
     await state.recorder.stop(true);
+    if (version !== chatVersion) return;
     $('#voice-recording').hidden = true;
   }
+  stopVoice();
+  clearTimeout(state.typingTimer);
+  $('#typing-hint').hidden = true;
   state.activeConvId = convId;
-  state.messages.delete(convId);
+  restoreDraft(convId);
+  if (!state.messages.has(convId)) state.messages.set(convId, []);
   $('#chat-empty').hidden = true;
   $('#chat-main').hidden = false;
   $('#search-panel').hidden = true;
   $('#emoji-panel').hidden = true;
+  $('#sticker-panel').hidden = true;
   $('#msg-list').innerHTML =
     '<div class="skel-wrap">' +
     '<div class="skel-row"><div class="skel skel-avatar"></div><div class="skel skel-bubble"></div></div>' +
@@ -369,13 +408,16 @@ async function openConv(convId) {
   renderConvList();
   document.body.classList.remove('show-sidebar');
 
-  await renderChatHeader(conv);
+  applyInputHeight();
+  // 群成员请求与历史消息并行，旧会话只更新自己的缓存。
+  renderChatHeader(conv);
   try {
     const data = await api.messages(convId);
-    state.messages.set(convId, data.messages);
+    if (version !== chatVersion || !isConvActive(convId)) return;
+    mergeMessages(convId, data.messages);
     state.hasMore.set(convId, data.hasMore);
   } catch (e) {
-    state.messages.set(convId, []);
+    if (version !== chatVersion || !isConvActive(convId)) return;
     toast('加载消息失败：' + e.message);
   }
   renderMessages(false);
@@ -402,7 +444,7 @@ async function renderChatHeader(conv) {
         group.members.forEach(cacheUser);
       } catch (_) {}
     }
-    $('#chat-subtitle').textContent = `群聊${conv.members ? ' · ' + conv.members.length + ' 人' : ''}`;
+    if (isConvActive(conv.convId)) $('#chat-subtitle').textContent = `群聊${conv.members ? ' · ' + conv.members.length + ' 人' : ''}`;
     return;
   }
   // 单聊：开放音视频通话（群聊暂不支持）
@@ -464,7 +506,7 @@ async function openSavedModal() {
   }
   body.innerHTML = items.map(s => `<div class="user-row" data-saved="${s.id}">
     <div class="info"><div class="name">${escapeHtml(s.msg.snip || s.msg.content?.text || '[内容]')}</div>
-    <div class="sub">${formatTime(s.msg.createdAt)} · ${s.msg.kind}</div></div>
+    <div class="sub">${formatTime(s.msg.createdAt)} · ${escapeHtml(s.msg.kind)}</div></div>
     <button class="modal-btn ghost" data-del="${s.id}" style="margin-left:auto">删除</button></div>`).join('');
   body.addEventListener('click', async (e) => {
     if (e.target.dataset.act === 'close') { closeModal(); return; }
@@ -604,9 +646,9 @@ function msgRowHtml(m) {
   const atsMe = Array.isArray(m.ats) && m.ats.includes(state.me.id);
 
   const inner = m.kind === 'image'
-    ? `<div class="bubble image"><img src="${m.content.url}" alt="图片"></div>`
+    ? `<div class="bubble image"><img src="${escapeHtml(safeUrl(m.content.url))}" alt="图片"></div>`
     : m.kind === 'sticker'
-    ? `<div class="bubble sticker"><img src="${m.content.url}" alt="表情"></div>`
+    ? `<div class="bubble sticker"><img src="${escapeHtml(safeUrl(m.content.url))}" alt="表情"></div>`
     : m.kind === 'voice'
     ? voiceBubbleHtml(m)
     : m.kind === 'file'
@@ -641,7 +683,7 @@ function msgActionsHtml(m) {
   const mine = m.senderId === state.me.id;
   const acts = ['reply', 'react', 'save', 'copy'];
   if (m.kind === 'text' || m.kind === 'file') acts.push('forward');
-  if (mine && (m.kind === 'text')) acts.push('edit');
+  if (mine && m.kind === 'text' && !m.revoked) acts.push('edit');
   if (mine) acts.push('recall');
   const label = { reply: '回复', react: '回应', save: '收藏', copy: '复制', forward: '转发', edit: '编辑', recall: '撤回' };
   return `<div class="msg-actions">${acts.map(a =>
@@ -662,7 +704,7 @@ function reactionsHtml(m) {
 function fileBubbleHtml(m) {
   const name = escapeHtml(m.content.name || '文件');
   const size = humanSize(m.content.size);
-  const url = escapeHtml(m.content.url || '');
+  const url = escapeHtml(safeUrl(m.content.url));
   const isImg = isImageFilename(m.content.name);
   return `<div class="bubble file">
     <a class="file-card" href="${url}" target="_blank" rel="noopener" download>
@@ -672,13 +714,14 @@ function fileBubbleHtml(m) {
   </div>`;
 }
 function voiceBubbleHtml(m) {
-  const dur = m.content.duration || 1;
+  const rawDuration = Number(m.content.duration);
+  const dur = Number.isFinite(rawDuration) ? Math.max(1, Math.min(3600, Math.round(rawDuration))) : 1;
   const peaks = Array.isArray(m.content.peaks) && m.content.peaks.length
     ? m.content.peaks
     : new Array(20).fill(0.3);
   const bars = peaks
     .map(p => `<i style="height:${Math.max(4, Math.round(p * 26))}px"></i>`).join('');
-  return `<div class="bubble voice" data-voice-url="${m.content.url}" data-duration="${dur}">
+  return `<div class="bubble voice" data-voice-url="${escapeHtml(safeUrl(m.content.url))}" data-duration="${dur}">
     <span class="voice-play">▶</span>
     <span class="voice-bars">${bars}</span>
     <span class="voice-dur">${dur}"</span>
@@ -754,6 +797,16 @@ async function markActiveConvRead() {
   try { await api.markRead(convId); } catch (_) {}
 }
 
+/** REST 历史与加载期间到达的消息合并，并建立操作按钮/实时更新使用的索引。 */
+function mergeMessages(convId, messages) {
+  const byId = new Map((state.messages.get(convId) || []).map(m => [m.msgId, m]));
+  for (const m of messages) byId.set(m.msgId, m);
+  const merged = [...byId.values()].sort((a, b) => a.createdAt - b.createdAt || (a.id || Infinity) - (b.id || Infinity));
+  state.messages.set(convId, merged);
+  for (const m of merged) state.msgMap.set(m.msgId, m);
+  cacheUsers(merged.map(m => m.senderId));
+}
+
 /** 把消息加入本地状态、更新会话预览与排序 */
 function pushMessage(msg, isNew) {
   state.msgMap.set(msg.msgId, msg);
@@ -765,11 +818,14 @@ function pushMessage(msg, isNew) {
     state.conversations.unshift(conv);
   }
   let list = state.messages.get(msg.convId);
-  if (!list && isConvActive(msg.convId)) {
+  if (!list) {
     list = [];
     state.messages.set(msg.convId, list);
   }
-  if (list) list.push(msg);
+  const index = list.findIndex(m => m.msgId === msg.msgId);
+  if (index < 0) list.push(msg);
+  else list[index] = msg;
+  state.conversations.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.lastTime - a.lastTime);
 }
 
 /* ---------------- 事件绑定 ---------------- */
@@ -862,17 +918,20 @@ function closeContextMenu() {
 function bindChatEvents() {
   const input = $('#msg-input');
   let typingEndTimer = null;
-  const sendTyping = debounce(async (typing) => {
-    if (!state.activeConvId) return;
-    await state.socket.send({ type: 'typing', convId: state.activeConvId, typing });
+  const sendTyping = debounce(async (convId, typing) => {
+    if (!convId || !isConvActive(convId)) return;
+    await state.socket.send({ type: 'typing', convId, typing });
   }, 400);
 
   input.addEventListener('input', () => {
     autoResize(input);
     if (!state.activeConvId) return;
-    sendTyping(true);
+    saveCurrentDraft();
+    renderConvList();
+    const convId = state.activeConvId;
+    sendTyping(convId, true);
     clearTimeout(typingEndTimer);
-    typingEndTimer = setTimeout(() => sendTyping(false), 2000);
+    typingEndTimer = setTimeout(() => sendTyping(convId, false), 2000);
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -935,9 +994,9 @@ function bindChatEvents() {
   $('#emoji-panel').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-emoji]');
     if (!btn) return;
-    input.value += btn.dataset.emoji;
+    input.setRangeText(btn.dataset.emoji, input.selectionStart, input.selectionEnd, 'end');
     input.focus();
-    autoResize(input);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   $('#sticker-panel').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-sticker]');
@@ -967,7 +1026,7 @@ function bindChatEvents() {
 
   $('#msg-list').addEventListener('scroll', debounce(() => {
     const el = $('#msg-list');
-    if (el.scrollTop < 60 && !state.loadingMore && state.hasMore.get(state.activeConvId)) {
+    if (el.scrollTop < 60 && !state.loadingMore.has(state.activeConvId) && state.hasMore.get(state.activeConvId)) {
       loadOlder();
     }
   }, 250));
@@ -982,12 +1041,13 @@ function bindChatEvents() {
   });
 
   $('#btn-search-history').onclick = () => {
+    ++searchVersion;
     $('#search-panel').hidden = false;
     $('#history-search-input').value = '';
     $('#search-results').innerHTML = '<div class="search-empty">输入关键词后回车搜索</div>';
     $('#history-search-input').focus();
   };
-  $('#btn-close-search').onclick = () => { $('#search-panel').hidden = true; };
+  $('#btn-close-search').onclick = () => { ++searchVersion; $('#search-panel').hidden = true; };
   $('#history-search-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') searchHistory(e.target.value.trim());
   });
@@ -1033,11 +1093,8 @@ function bindChatEvents() {
     const r = e.target.closest('.msg-reply');
     if (!r || !r.dataset.goto) return;
     const target = r.dataset.goto;
-    const list = state.messages.get(state.activeConvId) || [];
-    const idx = list.findIndex(x => x.msgId === target);
-    if (idx < 0) { toast('该消息不在当前已加载范围'); return; }
-    const nodes = msgList.querySelectorAll('.msg-row');
-    const node = nodes[idx];
+    const node = [...msgList.querySelectorAll('.msg-row')].find(el => el.dataset.msgid === target);
+    if (!node) { toast('该消息不在当前已加载范围'); return; }
     if (node) {
       node.scrollIntoView({ block: 'center', behavior: 'smooth' });
       node.classList.remove('flash');
@@ -1096,8 +1153,9 @@ function handleSocketMessage(obj) {
 }
 
 function onServerError(obj) {
+  if (obj.code === 'recall_too_late') { toast('发送超过 2 分钟的消息不能撤回'); return; }
   const m = obj.msgId && state.msgMap.get(obj.msgId);
-  if (m) {
+  if (m && m.status === 'sending') {
     m.status = 'failed';
     if (isConvActive(m.convId)) renderMessages(false);
   }
@@ -1113,15 +1171,14 @@ async function onIncomingMessage(msg) {
     if (!convOf(convId)) return;
   }
   cacheUsers([msg.senderId]);
-  const list = state.messages.get(convId);
+  const duplicate = state.msgMap.has(msg.msgId);
   pushMessage(msg, true);
-  if (list && isConvActive(convId)) renderMessages(false, true);
+  if (isConvActive(convId)) renderMessages(false, true);
 
-  if (isConvActive(convId)) {
-    markActiveConvRead();          // 当前会话直接已读
-  } else {
+  if (!duplicate && msg.senderId !== state.me.id) {
     const conv = convOf(convId);
     conv.unread = (conv.unread || 0) + 1;
+    if (isConvActive(convId) && !document.body.classList.contains('show-sidebar')) markActiveConvRead();
   }
   renderConvList();
   updateTitleBadge();
@@ -1131,14 +1188,15 @@ function onAck(obj) {
   const m = state.msgMap.get(obj.msgId);
   if (!m) return;
   m.id = obj.serverId;
-  m.status = obj.delivered ? 'delivered' : 'sent';
+  if (Number.isFinite(obj.ts)) m.createdAt = obj.ts;
+  if (m.status !== 'read') m.status = obj.delivered ? 'delivered' : 'sent';
   if (isConvActive(m.convId)) renderMessages(false);
 }
 
 function onStatus(obj) {
   const m = state.msgMap.get(obj.msgId);
   if (!m || !obj.status) return;
-  m.status = obj.status;
+  if (m.status !== 'read') m.status = obj.status;
   if (isConvActive(m.convId)) renderMessages(false);
 }
 
@@ -1146,7 +1204,7 @@ function onRead(obj) {
   const list = state.messages.get(obj.convId) || [];
   let changed = false;
   for (const m of list) {
-    if (m.senderId === state.me.id && !m.revoked && m.status !== 'read') {
+    if (m.senderId === state.me.id && m.id && m.createdAt <= obj.ts && !m.revoked && m.status !== 'read' && m.status !== 'failed') {
       m.status = 'read';
       changed = true;
     }
@@ -1163,10 +1221,12 @@ function onTyping(obj) {
     $('#typing-hint').textContent = `${who} 正在输入...`;
     $('#typing-hint').hidden = false;
     clearTimeout(state.typingTimer);
-    state.typingTimer = setTimeout(() => { $('#typing-hint').hidden = true; }, 3000);
+    state.typingTimer = setTimeout(() => { $('#typing-hint').hidden = true; applyInputHeight(); }, 3000);
   } else {
+    clearTimeout(state.typingTimer);
     $('#typing-hint').hidden = true;
   }
+  applyInputHeight();
 }
 
 function onPresence(obj) {
@@ -1243,8 +1303,12 @@ function onGroupDismissed(obj) {
   const convId = 'g_' + obj.groupId;
   toast(`群聊「${obj.groupName}」已解散`);
   state.conversations = state.conversations.filter(c => c.convId !== convId);
+  state.convMap.delete(convId);
+  draftStore?.set(convId, '', null);
   state.messages.delete(convId);
   if (state.activeConvId === convId) {
+    ++chatVersion;
+    ++searchVersion;
     state.activeConvId = null;
     $('#chat-main').hidden = true;
     $('#chat-empty').hidden = false;
@@ -1326,8 +1390,10 @@ function renderReplyBar() {
   const r = state.replyDraft;
   bar.hidden = !r;
   if (r) bar.querySelector('.reply-snip').textContent = r.snip;
-  // 引用栏显隐会改变输入框剩余空间，重算高度（默认占满时自动伸缩）
+  // 引用栏显隐会改变剩余空间，同时保存引用草稿。
   autoResize($('#msg-input'));
+  saveCurrentDraft();
+  renderConvList();
 }
 function clearForwardDraft() {
   state.forwardDraft = null;
@@ -1374,9 +1440,10 @@ async function sendImage(file) {
 /** 发送任意文件（QQ/微信式：支持拖拽与选择） */
 async function sendFile(file) {
   if (!state.activeConvId || !file) return;
-  if (file.size > 50 * 1024 * 1024) { toast('文件不能超过 50MB'); return; }
+  if (file.size > 10 * 1024 * 1024) { toast('文件不能超过 10MB'); return; }
   const conv = convOf(state.activeConvId);
   if (!conv) return;
+  const reply = state.replyDraft;
   toast('文件上传中...', 2000);
   let url;
   try {
@@ -1389,7 +1456,6 @@ async function sendFile(file) {
   }
   const msgId = 'c_' + crypto.randomUUID();
   const content = { url, name: file.name, size: file.size };
-  const reply = state.replyDraft;
   const msg = {
     id: null, msgId, convType: conv.convType, convId: conv.convId, senderId: state.me.id,
     to: conv.convType === 'single' ? conv.peer.id : null,
@@ -1397,7 +1463,7 @@ async function sendFile(file) {
     kind: 'file', content, createdAt: Date.now(), revoked: false, status: 'sending',
   };
   if (reply) { msg.replyTo = reply.msgId; msg.replySnip = reply.snip; }
-  clearReplyDraft();
+  if (isConvActive(conv.convId) && state.replyDraft === reply) clearReplyDraft();
   pushMessage(msg, true);
   if (isConvActive(conv.convId)) renderMessages(false, true);
   const out = { msgId, convType: msg.convType, to: msg.to, groupId: msg.groupId, kind: 'file', content };
@@ -1673,7 +1739,7 @@ function openReactPicker(m) {
       <div class="react-picker">
         ${all.map(e => {
           const on = m.reactions?.[e]?.includes(state.me.id);
-          return `<button class="react-pick ${on ? 'on' : ''}" data-emoji="${e}">${e}</button>`;
+          return `<button class="react-pick ${on ? 'on' : ''}" data-emoji="${escapeHtml(e)}">${escapeHtml(e)}</button>`;
         }).join('')}
       </div>
     </div>`);
@@ -1739,9 +1805,18 @@ async function forwardMessageTo(m, target, fromWho) {
     kind: m.kind === 'system' ? 'text' : m.kind, content,
     forwardFrom: fromWho,
   };
+  const local = { ...out, id: null, convId: target.convId, senderId: state.me.id,
+    createdAt: Date.now(), revoked: false, status: 'sending' };
+  pushMessage(local, true);
+  renderConvList();
+  if (isConvActive(target.convId)) renderMessages(false, true);
   const ok = await state.socket.send({ type: 'chat', msg: out });
-  if (ok) toast('已转发');
-  else toast('转发失败');
+  if (ok) toast('已提交转发');
+  else {
+    local.status = 'failed';
+    if (isConvActive(target.convId)) renderMessages(true);
+    toast('转发失败');
+  }
 }
 
 /** 编辑消息（限本人 24 小时内的文本） */
@@ -1772,38 +1847,42 @@ async function loadOlder() {
   const convId = state.activeConvId;
   const list = state.messages.get(convId) || [];
   const first = list.find(m => m.id);
-  if (!convId || !first) return;
-  state.loadingMore = true;
+  if (!convId || !first || state.loadingMore.has(convId)) return;
+  const version = chatVersion;
+  state.loadingMore.add(convId);
   try {
     const data = await api.messages(convId, first.id);
-    state.messages.set(convId, [...data.messages, ...list]);
+    if (version !== chatVersion || !isConvActive(convId)) return;
+    mergeMessages(convId, data.messages);
     state.hasMore.set(convId, data.hasMore);
     renderMessages(true);
   } catch (e) {
-    toast('加载更多失败：' + e.message);
+    if (version === chatVersion && isConvActive(convId)) toast('加载更多失败：' + e.message);
   } finally {
-    state.loadingMore = false;
+    state.loadingMore.delete(convId);
   }
 }
 
 async function searchHistory(q) {
   const convId = state.activeConvId;
+  const version = ++searchVersion;
   if (!convId || !q) return;
   const box = $('#search-results');
   box.innerHTML = '<div class="search-empty">搜索中...</div>';
   try {
     const { results } = await api.searchHistory(convId, q);
+    if (version !== searchVersion || !isConvActive(convId) || $('#search-panel').hidden) return;
     if (!results.length) {
       box.innerHTML = '<div class="search-empty">没有找到相关聊天记录</div>';
       return;
     }
     box.innerHTML = results.map(m => `
-      <div class="search-result-item" data-msgid="${m.msgId}">
+      <div class="search-result-item" data-msgid="${escapeHtml(m.msgId)}">
         <div>${escapeHtml(previewText(m))}</div>
         <div class="time">${escapeHtml(m.senderId === state.me.id ? '我' : (senderOf(m)?.nickname || ''))} · ${formatTime(m.createdAt)}</div>
       </div>`).join('');
   } catch (e) {
-    box.innerHTML = `<div class="search-empty">搜索失败：${escapeHtml(e.message)}</div>`;
+    if (version === searchVersion && isConvActive(convId)) box.innerHTML = `<div class="search-empty">搜索失败：${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1811,7 +1890,8 @@ $('#search-results').addEventListener('click', (e) => {
   const item = e.target.closest('.search-result-item');
   if (!item) return;
   $('#search-panel').hidden = true;
-  const el = $(`#msg-list [data-msgid="${item.dataset.msgid}"]`);
+  ++searchVersion;
+  const el = $$('#msg-list .msg-row').find(node => node.dataset.msgid === item.dataset.msgid);
   if (el) {
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     el.style.transition = 'background .4s';
@@ -2046,9 +2126,15 @@ async function openConvInfoModal() {
         await api.deleteFriend(p.id);
         state.conversations = state.conversations.filter(c => c.convId !== conv.convId);
         state.messages.delete(conv.convId);
-        state.activeConvId = null;
-        $('#chat-main').hidden = true;
-        $('#chat-empty').hidden = false;
+        state.convMap.delete(conv.convId);
+        draftStore?.set(conv.convId, '', null);
+        if (isConvActive(conv.convId)) {
+          ++chatVersion;
+          ++searchVersion;
+          state.activeConvId = null;
+          $('#chat-main').hidden = true;
+          $('#chat-empty').hidden = false;
+        }
         await loadFriends();
         renderConvList();
         updateTitleBadge();
