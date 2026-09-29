@@ -32,6 +32,7 @@ function attach(server) {
     const sid = url.searchParams.get('sid') || '';
     if (!payload || !payload.uid) { ws.close(4001, 'unauthorized'); return; }
     const key = state.getKey(payload.uid, sid);
+    if (!key) { ws.close(4002, 'invalid_session'); return; }
     ws.userId = payload.uid;
     ws.sessionId = sid;
     ws.isAlive = true;
@@ -72,12 +73,15 @@ function onMessage(ws, raw) {
 
   let payload;
   if (typeof obj.d === 'string') {
-    const key = state.getKey(ws.userId, obj.sid);
+    if (obj.sid !== ws.sessionId) return;
+    const key = state.getKey(ws.userId, ws.sessionId);
     if (!key) return;                       // 找不到会话密钥，丢弃
     try { payload = JSON.parse(decrypt(key, obj.d)); } catch (_) { return; }
   } else {
-    payload = obj;                          // 明文降级：仅用于 ping/pong
+    if (obj.type !== 'ping' && obj.type !== 'pong') return;
+    payload = obj;                          // 明文仅允许心跳，绝不处理业务载荷
   }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
 
   switch (payload.type) {
     case 'ping': send(ws, { type: 'pong' }); return;
@@ -169,8 +173,12 @@ function handleChat(ws, p) {
   }
 
   // 幂等：同一 msgId 重复发送只回 ACK
-  const exist = db.prepare('SELECT id, created_at, delivered FROM messages WHERE msg_id = ?').get(m.msgId);
+  const exist = db.prepare('SELECT id, created_at, delivered, sender_id, conv_id FROM messages WHERE msg_id = ?').get(m.msgId);
   if (exist) {
+    if (exist.sender_id !== userId || exist.conv_id !== convId) {
+      send(ws, { type: 'error', code: 'msg_id_conflict', msgId: m.msgId });
+      return;
+    }
     send(ws, { type: 'ack', msgId: m.msgId, serverId: exist.id, ts: exist.created_at, status: 'sent', delivered: exist.delivered });
     return;
   }

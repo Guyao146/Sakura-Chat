@@ -8,6 +8,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "test": "node test/e2e.js",
+    "test:isolated": "node test/run-isolated.js",
+    "test:browser": "node test/run-isolated.js --browser",
     "keygen": "node server/keygen.js",
     "stickers": "node tools/gen-stickers.js"
   },

@@ -110,8 +110,13 @@ router.patch('/:convId/settings', (req, res) => {
   if (!canAccessConv(req.user.id, convId)) {
     return res.status(403).json({ error: '无权访问该会话' });
   }
-  const pinned = req.body.pinned === true ? 1 : 0;
-  const muted = req.body.muted === true ? 1 : 0;
+  const current = settingsOf(req.user.id, convId);
+  const body = req.body || {};
+  if (['pinned', 'muted'].some(k => k in body && typeof body[k] !== 'boolean')) {
+    return res.status(400).json({ error: '会话设置必须是布尔值' });
+  }
+  const pinned = Number(body.pinned ?? current.pinned);
+  const muted = Number(body.muted ?? current.muted);
   db.prepare(`
     INSERT INTO conv_settings (user_id, conv_id, pinned, muted) VALUES (?, ?, ?, ?)
     ON CONFLICT(user_id, conv_id) DO UPDATE SET pinned = ?, muted = ?

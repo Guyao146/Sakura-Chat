@@ -11,7 +11,7 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
 const HOST = process.env.HOST || 'http://localhost:3000';
-const DB_PATH = path.join(__dirname, '..', 'server', 'data', 'sakura-chat.db');
+const DB_PATH = path.join(process.env.SAKURA_DATA_DIR || path.join(__dirname, '..', 'server', 'data'), 'sakura-chat.db');
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -130,6 +130,40 @@ async function ensureUser(username, password, nickname) {
   ]);
   check('WS 建立并收到 connected 事件', !!connected);
 
+  console.log('--- WS 会话边界 / 明文拒绝 ---');
+  const invalidWs = new WebSocket(HOST.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(alice.token) + '&sid=invalid');
+  const invalidCode = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { invalidWs.terminate(); reject(new Error('无效会话未关闭')); }, 4000);
+    invalidWs.on('close', code => { clearTimeout(timer); resolve(code); });
+    invalidWs.on('error', reject);
+  });
+  check('无效会话密钥拒绝连接', invalidCode === 4002);
+  const plainId = 'plain_' + crypto.randomUUID();
+  const wrongSidId = 'sid_' + crypto.randomUUID();
+  const packet = id => ({ type: 'chat', msg: { msgId: id, convType: 'single', to: bob.user.id, kind: 'text', content: { text: '不得入库' } } });
+  ca.ws.send(JSON.stringify(packet(plainId)));
+  const anotherSession = await http('GET', '/api/auth/session', null, alice.token);
+  ca.ws.send(JSON.stringify({ sid: anotherSession.sessionId, d: enc(Buffer.from(anotherSession.sessionKey, 'base64'), JSON.stringify(packet(wrongSidId))) }));
+  ca.send(null);
+  // 同一连接的心跳作为处理屏障，避免仅凭短暂未收到消息就断言拒绝成功。
+  ca.ws.send(JSON.stringify({ type: 'ping' }));
+  await ca.wait(e => e.type === 'pong');
+  const guardedHistory = (await http('GET', '/api/conversations/' + singleConvId + '/messages', null, alice.token)).messages;
+  check('明文业务消息不得入库', !guardedHistory.some(m => m.msgId === plainId));
+  check('不能使用另一会话密钥绕过连接绑定', !guardedHistory.some(m => m.msgId === wrongSidId));
+
+  console.log('--- 好友拒绝后重新申请 ---');
+  await http('POST', '/api/friends/request', { userId: carol.user.id }, bob.token);
+  const firstRequest = await cc.wait(e => e.type === 'friend_request' && e.request.from.id === bob.user.id);
+  check('新好友申请推送携带可操作的 id', Number.isInteger(firstRequest.request.id));
+  await http('POST', '/api/friends/requests/' + firstRequest.request.id + '/reject', null, carol.token);
+  await http('POST', '/api/friends/request', { userId: carol.user.id, remark: '再次申请' }, bob.token);
+  const retried = await cc.wait(e => e.type === 'friend_request' && e.request.remark === '再次申请');
+  const pending = (await http('GET', '/api/friends/requests', null, carol.token)).requests;
+  check('拒绝后可重新申请且不重复建记录', pending.length === 1 && pending[0].id === retried.request.id);
+  await http('POST', '/api/friends/requests/' + retried.request.id + '/accept', null, carol.token);
+  check('重新申请后可正常同意', (await http('GET', '/api/friends', null, bob.token)).friends.some(f => f.id === carol.user.id));
+
   const secret = '这是一条加密聊天记录' + Date.now();
   const msgId = 't_' + crypto.randomUUID();
   ca.send({ type: 'chat', msg: { msgId, convType: 'single', to: bob.user.id, kind: 'text', content: { text: secret } } });
@@ -137,6 +171,12 @@ async function ensureUser(username, password, nickname) {
   check('Bob 收到加密消息且内容正确解密', bobGot?.msg?.content?.text === secret);
   const ack = await ca.wait(e => e.type === 'ack' && e.msgId === msgId);
   check('Alice 收到 ACK（服务端已持久化）', !!ack?.serverId);
+  ca.send({ type: 'chat', msg: { msgId, convType: 'single', to: bob.user.id, kind: 'text', content: { text: secret } } });
+  const duplicateAck = await ca.wait(e => e.type === 'ack' && e.msgId === msgId);
+  check('同一发送者重试仍返回原 ACK', duplicateAck.serverId === ack.serverId);
+  cb.send({ type: 'chat', msg: { msgId, convType: 'single', to: alice.user.id, kind: 'text', content: { text: '冒用消息编号' } } });
+  const conflict = await cb.wait(e => e.type === 'error' && e.msgId === msgId);
+  check('不同发送者不能冒用消息编号获取 ACK', conflict.code === 'msg_id_conflict');
 
   await cb.send({ type: 'read', convId: singleConvId });
   const readEvt = await ca.wait(e => e.type === 'read' && e.convId === singleConvId);
@@ -285,6 +325,17 @@ async function ensureUser(username, password, nickname) {
   const sc = convs2.find(c => c.convId === singleConvId);
   check('会话置顶 + 免打扰生效', sc?.pinned === true && sc?.muted === true);
   check('置顶会话排在列表最前', convs2[0].convId === singleConvId || convs2[0].pinned);
+  const unpin = await http('PATCH', '/api/conversations/' + singleConvId + '/settings', { pinned: false }, alice.token);
+  check('单独取消置顶不清除免打扰', !unpin.pinned && unpin.muted);
+  await http('PATCH', '/api/conversations/' + singleConvId + '/settings', { pinned: true }, alice.token);
+  const unmute = await http('PATCH', '/api/conversations/' + singleConvId + '/settings', { muted: false }, alice.token);
+  check('单独取消免打扰不清除置顶', unmute.pinned && !unmute.muted);
+  const unchanged = await http('PATCH', '/api/conversations/' + singleConvId + '/settings', {}, alice.token);
+  check('空 PATCH 保留设置', unchanged.pinned && !unchanged.muted);
+  const invalidSettings = await fetch(HOST + '/api/conversations/' + singleConvId + '/settings', {
+    method: 'PATCH', headers: { Authorization: 'Bearer ' + alice.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ muted: 'false' }),
+  });
+  check('拒绝非布尔设置', invalidSettings.status === 400);
 
   // 全局搜索
   const all = (await http('GET', '/api/conversations/search/all?q=' + encodeURIComponent('加密聊天记录'), null, alice.token));

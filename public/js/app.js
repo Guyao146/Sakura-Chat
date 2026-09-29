@@ -6,6 +6,7 @@ import { ChatSocket } from './lib/socket.js';
 import { EMOJIS } from './lib/emoji.js';
 import { VoiceRecorder } from './lib/voice.js';
 import { CallManager } from './lib/call.js';
+import { bindResizeHandle } from './lib/resize.js';
 
 const state = {
   me: null,
@@ -52,6 +53,7 @@ export async function initApp({ token, user, sessionId, sessionKey }) {
 
   state.socket = new ChatSocket({
     token, sessionId, sessionKey,
+    refreshSession: () => api.session(),
     onMessage: handleSocketMessage,
     onState: (s) => {
       if (s === 'close') {
@@ -87,7 +89,7 @@ function applySidebarWidth() {
     bar.style.width = '';                    // 移动端交给媒体查询控制
     return;
   }
-  const w = Number(localStorage.getItem(SIDEBAR_W_KEY));
+  const w = parseFloat(localStorage.getItem(SIDEBAR_W_KEY));
   if (w >= SIDEBAR_MIN && w <= SIDEBAR_MAX) {
     bar.style.width = w + 'px';
   }
@@ -96,16 +98,19 @@ function applySidebarWidth() {
 // 窗口尺寸变化时：桌面↔移动端切换，纠正内联宽度并自动显隐侧边栏
 let resizeTimer = null;
 let inputDragging = false;       // 输入框拖拽中标记，防止 resize 回调干扰正在调节的高度
+let wasMobile = window.innerWidth <= 1020;
 window.addEventListener('resize', () => {
   const mobile = window.innerWidth <= 1020;
   const bar = document.querySelector('.sidebar');
   if (mobile) {
     if (bar) bar.style.width = '';
-    document.body.classList.add('show-sidebar');   // 进入移动端宽度，自动显示会话列表
+    // 只在跨断点时切换导航；软键盘/高度变化不能把正在聊天的用户踢回列表。
+    if (!wasMobile) document.body.classList.toggle('show-sidebar', !state.activeConvId);
   } else {
-    document.body.classList.remove('show-sidebar'); // 回到桌面端，恢复双栏
+    document.body.classList.remove('show-sidebar');
     applySidebarWidth();
   }
+  wasMobile = mobile;
   // 防抖：拖动窗口过程中只在停顿后重算一次，避免高频布局计算卡顿
   if (resizeTimer) clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
@@ -117,33 +122,23 @@ function bindSidebarResizer() {
   const resizer = $('#sidebar-resizer');
   const bar = document.querySelector('.sidebar');
   if (!resizer || !bar) return;
-
   let startX = 0, startW = 0;
-  const onMove = (e) => {
-    const x = e.touches ? e.touches[0].clientX : e.clientX;
-    const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + (x - startX)));
-    bar.style.width = w + 'px';
-  };
-  const onUp = () => {
-    resizer.classList.remove('dragging');
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    localStorage.setItem(SIDEBAR_W_KEY, bar.style.width);
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', onUp);
-  };
-  const onDown = (e) => {
-    if (window.innerWidth <= 1020) return;   // 移动端不拖拽
-    e.preventDefault();
-    startX = e.touches ? e.touches[0].clientX : e.clientX;
-    startW = bar.getBoundingClientRect().width;
-    resizer.classList.add('dragging');
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  };
-  resizer.addEventListener('pointerdown', onDown);
+  bindResizeHandle(resizer, {
+    enabled: () => window.innerWidth > 1020,
+    start: (e) => {
+      startX = e.clientX;
+      startW = bar.getBoundingClientRect().width;
+    },
+    move: (e) => {
+      const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + e.clientX - startX));
+      bar.style.width = w + 'px';
+      autoResize($('#msg-input'));
+    },
+    end: () => {
+      const w = parseFloat(bar.style.width);
+      if (Number.isFinite(w)) localStorage.setItem(SIDEBAR_W_KEY, String(w));
+    },
+  });
 }
 
 /* ---------------- 输入框高度：默认单行、随内容自适应、可向上拖大 ---------------- */
@@ -203,48 +198,36 @@ function bindInputResizer() {
   const resizer = $('#input-resizer');
   const input = $('#msg-input');
   if (!resizer || !input) return;
-
-  let startY = 0, startH = 0;
-  const onMove = (e) => {
-    const y = e.touches ? e.touches[0].clientY : e.clientY;
-    // 把手在顶部：光标上移(y 变小) → 高度变大，下移 → 变小；钳制在 [单行, 上限]
-    inputBaseH = Math.max(INPUT_MIN, Math.min(inputMaxH(), startH + (startY - y)));
-    autoResize(input, true);
-  };
-  const onUp = () => {
-    inputDragging = false;
-    resizer.classList.remove('dragging');
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    if (inputBaseH <= INPUT_MIN) {
-      localStorage.removeItem(INPUT_H_KEY);           // 回到单行默认：清除记忆
-    } else {
-      localStorage.setItem(INPUT_H_KEY, String(inputBaseH));
-    }
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', onUp);
-  };
-  const onDown = (e) => {
-    if (e.pointerType === 'touch') return;            // 触屏不拖拽，避免与手势冲突
-    if (window.innerWidth <= 1020) return;            // 与侧边栏一致：窄屏不拖拽
-    if (e.detail >= 2) {                              // 连击 ≥2 次：复位（浏览器会随后派发 dblclick，统一在此处理，不再重复注册 dblclick）
+  let startY = 0, startH = 0, moved = false;
+  bindResizeHandle(resizer, {
+    enabled: () => window.innerWidth > 1020,
+    start: (e) => {
+      startY = e.clientY;
+      // 从屏幕上的实际高度起拖，长文本撑高后也不会突然跳回旧基准。
+      startH = input.getBoundingClientRect().height;
+      moved = false;
+      inputDragging = true;
+    },
+    move: (e) => {
+      if (e.clientY === startY && !moved) return;
+      moved = true;
+      inputBaseH = Math.max(INPUT_MIN, Math.min(inputMaxH(), startH + startY - e.clientY));
+      autoResize(input, true);
+    },
+    end: () => {
+      inputDragging = false;
+      if (!moved) return; // 普通点击不能把内容撑开的高度存为用户偏好。
+      inputBaseH = Math.min(inputBaseH, inputMaxH());
+      autoResize(input, true);
+      if (inputBaseH <= INPUT_MIN) localStorage.removeItem(INPUT_H_KEY);
+      else localStorage.setItem(INPUT_H_KEY, String(inputBaseH));
+    },
+    reset: () => {
       inputBaseH = INPUT_MIN;
       localStorage.removeItem(INPUT_H_KEY);
       applyInputHeight(false);
-      return;
-    }
-    e.preventDefault();
-    startY = e.clientY;
-    // 从「基准高度」起拖而非内容撑开的当前高度，保证拖动手感与输入内容解耦
-    startH = inputBaseH;
-    inputDragging = true;
-    resizer.classList.add('dragging');
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  };
-  resizer.addEventListener('pointerdown', onDown);
+    },
+  });
 }
 
 /* ---------------- 基础数据 ---------------- */
@@ -1107,8 +1090,20 @@ function handleSocketMessage(obj) {
     case 'call_busy': state.call?.onBusy(obj); break;
     case 'call_end': state.call?.onEnd(obj); break;
     case 'call_failed': state.call?.onFailed(obj); break;
+    case 'error': onServerError(obj); break;
     default: break;
   }
+}
+
+function onServerError(obj) {
+  const m = obj.msgId && state.msgMap.get(obj.msgId);
+  if (m) {
+    m.status = 'failed';
+    if (isConvActive(m.convId)) renderMessages(false);
+  }
+  if (obj.code === 'too_large') toast('消息内容过大，请分段发送');
+  else if (obj.code === 'msg_id_conflict') toast('消息发送冲突，请刷新后重试');
+  else toast(obj.msg || '发送失败');
 }
 
 async function onIncomingMessage(msg) {

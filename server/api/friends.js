@@ -54,21 +54,19 @@ router.post('/request', (req, res) => {
     return res.json({ message: '已添加为好友', accepted: true, friend: safeUser(getUserById(toId)) });
   }
 
-  // 我此前发过的待处理请求：更新备注与时间
-  const mine = db.prepare('SELECT id FROM friendships WHERE user_id = ? AND friend_id = ? AND status = 0')
-    .get(req.user.id, toId);
-  if (mine) {
-    db.prepare('UPDATE friendships SET remark = ?, created_at = ? WHERE id = ?').run(remark, now, mine.id);
-  } else {
-    db.prepare('INSERT INTO friendships (user_id, friend_id, remark, status, created_at) VALUES (?, ?, ?, 0, ?)')
-      .run(req.user.id, toId, remark, now);
-  }
+  // 重用待处理/已拒绝的申请，避免再次申请撞上双向关系的唯一约束。
+  const request = db.prepare(`
+    INSERT INTO friendships (user_id, friend_id, remark, status, created_at) VALUES (?, ?, ?, 0, ?)
+    ON CONFLICT(user_id, friend_id) DO UPDATE SET
+      remark = excluded.remark, status = 0, created_at = excluded.created_at, handled_at = NULL
+    RETURNING id
+  `).get(req.user.id, toId, remark, now);
 
   // 实时推送给对方
   const me = getUserById(req.user.id);
   state.sendToUser(toId, {
     type: 'friend_request',
-    request: { id: mine ? mine.id : null, from: safeUser(me), remark, createdAt: now },
+    request: { id: request.id, from: safeUser(me), remark, createdAt: now },
   });
   res.json({ message: '请求已发送' });
 });

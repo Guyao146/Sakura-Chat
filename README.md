@@ -75,7 +75,7 @@ Sakura-Chat/
 ├── .dockerignore
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml               # push/PR：语法检查 + E2E 45 项 + Docker 镜像冒烟
+│       ├── ci.yml               # push/PR：语法检查 + E2E 57 项 + Docker 镜像冒烟
 │       └── docker-publish.yml   # push master：构建并推送镜像到 ghcr.io
 ├── server/
 │   ├── index.js          # 入口：HTTP(S) + WebSocket + 静态托管前端
@@ -108,8 +108,13 @@ Sakura-Chat/
 │       ├── main.js       # 启动：登录态判定
 │       ├── login.js      # 登录/注册视图
 │       ├── app.js        # 主应用：会话列表/聊天窗口/实时事件/通话 UI
-│       └── lib/          # crypto / api / socket / util / emoji / voice / call
-└── test/e2e.js           # 端到端集成测试（45 项断言）
+│       └── lib/          # crypto / api / socket / util / emoji / voice / call / resize
+├── test/
+│   ├── e2e.js                  # 端到端集成测试（57 项断言）
+│   ├── run-isolated.js         # 独立端口 + 临时数据库跑全套回归（npm run test:isolated）
+│   ├── browser-input-height.mjs # 真实 Chrome 鼠标事件的输入框布局回归（npm run test:browser）
+│   └── browser-helper.mjs      # CDP 浏览器驱动封装
+
 ```
 ## 🔐 加密架构（三层）
 
@@ -179,9 +184,11 @@ docker run -d --rm --name sakura-test -p 3300:3000 sakura-chat:test
 HOST=http://127.0.0.1:3300 npm test
 ```
 
-> 也可使用 GitHub Actions：每次 push/PR 自动执行**语法检查 + 45 项 E2E 回归 + Docker 镜像构建冒烟**，无需本地配置。
+> 也可使用 GitHub Actions：每次 push/PR 自动执行**语法检查 + 57 项 E2E 回归 + Docker 镜像构建冒烟**，无需本地配置。
 
-测试覆盖：注册登录、JWT、会话密钥、好友请求/同意、**加密 WS 收发**、ACK、已读回执、输入提示、撤回、群聊广播、**表情包与语音消息收发**、**通话信令中继（邀请/应答/ICE/拒绝/挂断、非好友拦截、离线回执、通话记录）**、**引用回复 / 表情反应 / 消息编辑 / 拍一拍（含"他人消息不可编辑"权限）**、**置顶 + 免打扰、全局搜索、收藏/取消收藏、隐身状态广播**、服务端聊天记录搜索，**文件传输助手（注册默认好友、拒绝登录、不可搜索/添加/删除、消息自动送达+已读）**，以及**断言数据库中不存在明文聊天记录**（共 **45** 项）。
+本地还可用 `npm run test:isolated`（独立端口 + 临时数据库，不污染正式数据）或 `npm run test:browser`（附带真实 Chrome 鼠标事件的输入框布局回归 23 项）。
+
+测试覆盖：注册登录、JWT、会话密钥、好友请求/同意、**加密 WS 收发**、ACK、已读回执、输入提示、撤回、群聊广播、**表情包与语音消息收发**、**通话信令中继（邀请/应答/ICE/拒绝/挂断、非好友拦截、离线回执、通话记录）**、**引用回复 / 表情反应 / 消息编辑 / 拍一拍（含"他人消息不可编辑"权限）**、**置顶 + 免打扰（支持单独修改互不覆盖）、全局搜索、收藏/取消收藏、隐身状态广播**、**会话边界与明文拒绝（无效会话密钥关闭连接、明文业务消息不入库、不能使用其它会话密钥绕过连接绑定、消息编号冲突检测）**、**好友拒绝后可重新申请**、服务端聊天记录搜索，**文件传输助手（注册默认好友、拒绝登录、不可搜索/添加/删除、消息自动送达+已读）**，以及**断言数据库中不存在明文聊天记录**（共 **57** 项）。
 
 ---
 
@@ -228,7 +235,7 @@ PORT=3000 JWT_SECRET=<随机值> node server/index.js
 
 | Workflow | 触发 | 作用 |
 | --- | --- | --- |
-| `ci.yml` | push / PR | 语法检查 → E2E 45 项 → Docker 镜像构建冒烟 |
+| `ci.yml` | push / PR | 语法检查 → E2E 57 项 → Docker 镜像构建冒烟 |
 | `docker-publish.yml` | push master / tag `v*` | 构建镜像并推送到 **ghcr.io/guyao146/sakura-chat**（私有仓库即私有镜像） |
 
 服务器直接拉取已发布镜像：

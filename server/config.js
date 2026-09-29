@@ -4,8 +4,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
-const DATA_DIR = path.join(ROOT, 'server', 'data');
-const UPLOADS_DIR = path.join(ROOT, 'public', 'uploads');
 
 // 最小化 .env 加载（不引入额外依赖）
 function loadEnv() {
@@ -20,6 +18,11 @@ function loadEnv() {
   }
 }
 loadEnv();
+
+// 测试可指向临时目录，不污染正在使用的数据库与主密钥。
+const DATA_DIR = process.env.SAKURA_DATA_DIR
+  ? path.resolve(process.env.SAKURA_DATA_DIR) : path.join(ROOT, 'server', 'data');
+const UPLOADS_DIR = path.join(ROOT, 'public', 'uploads');
 
 const config = {
   port: parseInt(process.env.PORT || '3000', 10),
