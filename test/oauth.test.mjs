@@ -316,5 +316,3 @@ test('OAuth/OIDC 第三方登录', async t => {
   await server.stop();
   await idp.stop();
 });
-
-
