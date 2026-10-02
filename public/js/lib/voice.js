@@ -3,72 +3,127 @@
 export class VoiceRecorder {
   constructor({ maxSec = 60 } = {}) {
     this.maxSec = maxSec;
-    this.recording = false;
+    this.session = null;
+    this.finishing = null;
     this.onTick = null;
+    this.onLimit = null;
+    this.onError = null;
   }
 
+  get recording() { return !!this.session?.recording; }
+  get starting() { return !!this.session && !this.session.recording; }
+  get busy() { return !!(this.session || this.finishing); }
+
   async start() {
-    if (this.recording) return;
+    if (this.busy) return false;
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('浏览器不支持录音');
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    this.stream = stream;
-    const mime = pickMime();
-    this.mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-    this.chunks = [];
-    this.peaks = [];
-    this.mr.ondataavailable = (e) => { if (e.data && e.data.size) this.chunks.push(e.data); };
-    this.startTime = performance.now();
-
-    // 采集频谱电平用于波形显示
-    this.ac = new (window.AudioContext || window.webkitAudioContext)();
-    const src = this.ac.createMediaStreamSource(stream);
-    const analyser = this.ac.createAnalyser();
-    analyser.fftSize = 256;
-    src.connect(analyser);
-    const buf = new Uint8Array(analyser.frequencyBinCount);
-    this.raf = setInterval(() => {
-      analyser.getByteFrequencyData(buf);
-      let sum = 0;
-      for (let i = 4; i < buf.length; i++) sum += buf[i];
-      const level = Math.min(1, (sum / (buf.length - 4)) / 110);
-      this.peaks.push(level);
-      this.onTick?.(this.durationMs(), level);
-    }, 60);
-
-    this.mr.start();
-    this.recording = true;
-    this.maxTimer = setTimeout(() => this.stop(false), this.maxSec * 1000);
+    const session = this.session = { chunks: [], peaks: [], recording: false };
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // getUserMedia 无法取消权限弹窗，返回后立即停止已作废请求取得的轨道。
+      if (this.session !== session) { stream.getTracks().forEach(t => t.stop()); return false; }
+      session.stream = stream;
+      const mime = pickMime();
+      const mr = session.mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      mr.ondataavailable = (e) => { if (e.data?.size) session.chunks.push(e.data); };
+      mr.onerror = () => {
+        if (this.session !== session) return;
+        this.stop(true);
+        this.onError?.(new Error('录音设备异常，录音已取消'));
+      };
+      const ac = session.ac = new (window.AudioContext || window.webkitAudioContext)();
+      const src = session.src = ac.createMediaStreamSource(stream);
+      const analyser = session.analyser = ac.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      mr.start();
+      session.startTime = performance.now();
+      session.recording = true;
+      session.raf = setInterval(() => {
+        analyser.getByteFrequencyData(buf);
+        let sum = 0;
+        for (let i = 4; i < buf.length; i++) sum += buf[i];
+        const level = Math.min(1, (sum / (buf.length - 4)) / 110);
+        session.peaks.push(level);
+        this.onTick?.(this.durationMs(), level);
+      }, 60);
+      session.maxTimer = setTimeout(() => {
+        if (this.session !== session) return;
+        if (this.onLimit) this.onLimit(); else this.stop(true);
+      }, this.maxSec * 1000);
+      return true;
+    } catch (e) {
+      if (this.session !== session) return false;
+      this.session = null;
+      this.release(session);
+      this.detach(session);
+      throw e;
+    }
   }
 
   durationMs() {
-    return this.recording ? performance.now() - this.startTime : 0;
+    return this.recording ? performance.now() - this.session.startTime : 0;
   }
 
   /** 结束录音；cancel=true 时丢弃 */
-  async stop(cancel = false) {
-    if (!this.recording) return null;
-    clearTimeout(this.maxTimer);
-    clearInterval(this.raf);
-    this.recording = false;
+  stop(cancel = false) {
+    if (this.finishing) {
+      if (cancel) { this.finishing.cancelled = true; this.finishing.finish(); }
+      // 只有首次 stop 的调用方取得结果，避免重复发送。
+      return Promise.resolve(null);
+    }
+    const session = this.session;
+    if (!session) return Promise.resolve(null);
     const dur = this.durationMs();
-    await new Promise((resolve) => {
-      this.mr.onstop = resolve;
-      try { this.mr.stop(); } catch (_) { resolve(); }
+    this.session = null;
+    if (cancel || !session.recording) {
+      this.release(session);
+      this.detach(session);
+      return Promise.resolve(null);
+    }
+    const mime = session.mr.mimeType || 'audio/webm';
+    this.finishing = session;
+    const stopped = new Promise(resolve => {
+      session.finish = resolve;
+      session.mr.onstop = resolve;
+      session.mr.onerror = () => { session.cancelled = true; resolve(); };
+      // 异常驱动可能不派发 stop，不能永久持有录音缓冲与闭包。
+      session.stopTimer = setTimeout(() => { session.cancelled = true; resolve(); }, 1500);
     });
-    this.cleanup();
-    if (cancel) return null;
-    const blob = new Blob(this.chunks, { type: this.mr?.mimeType || 'audio/webm' });
-    if (!blob.size) return null;
-    return { blob, duration: Math.round(dur) / 1000, peaks: downsample(this.peaks, 30) };
+    this.release(session);
+    return stopped.then(() => {
+      try {
+        if (session.cancelled) return null;
+        const blob = new Blob(session.chunks, { type: mime });
+        return blob.size ? { blob, duration: Math.round(dur) / 1000, peaks: downsample(session.peaks, 30) } : null;
+      } finally {
+        this.detach(session);
+        if (this.finishing === session) this.finishing = null;
+      }
+    });
   }
 
-  cleanup() {
-    this.stream?.getTracks().forEach((t) => t.stop());
-    this.ac?.close().catch(() => {});
-    this.stream = null;
-    this.ac = null;
-    this.mr = null;
+  release(session) {
+    clearTimeout(session.maxTimer);
+    clearInterval(session.raf);
+    session.maxTimer = session.raf = null;
+    try { if (session.mr?.state !== 'inactive') session.mr?.stop(); } catch (_) { session.finish?.(); }
+    session.stream?.getTracks().forEach(t => t.stop());
+    try { session.src?.disconnect(); session.analyser?.disconnect(); } catch (_) {}
+    try { session.ac?.close().catch(() => {}); } catch (_) {}
+    session.stream = session.ac = session.src = session.analyser = null;
   }
+
+  detach(session) {
+    clearTimeout(session.stopTimer);
+    if (session.mr) session.mr.ondataavailable = session.mr.onstop = session.mr.onerror = null;
+    session.mr = session.finish = null;
+    session.chunks = [];
+    session.peaks = [];
+  }
+
+  cleanup() { return this.stop(true); }
 }
 
 function pickMime() {

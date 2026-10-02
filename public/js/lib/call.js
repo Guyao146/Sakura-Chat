@@ -15,7 +15,7 @@ export class CallManager {
     this.socket = socket;
     this.getMe = getMe;
     this.onEvent = null;
-    this.state = 'idle';   // idle | outgoing | incoming | connected
+    this.state = 'idle';   // idle | outgoing | incoming | connecting | connected
     this.pc = null;
     this.localStream = null;
     this.remoteStream = null;
@@ -24,6 +24,7 @@ export class CallManager {
     this.incomingTimer = null;
     this.connectedOnce = false;
     this.iceQueue = [];            // PC 创建前收到的 ICE 候选暂存
+    this.generation = 0;           // 挂断后作废尚未完成的媒体/信令操作
   }
 
   get busy() { return this.state !== 'idle'; }
@@ -35,23 +36,30 @@ export class CallManager {
     this.media = media;
     this.callId = 'call_' + crypto.randomUUID();
     this.state = 'outgoing';
+    const generation = ++this.generation;
     this.role = 'caller';
     this.connectedOnce = false;
     this.iceQueue = [];
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: media === 'video' });
-    } catch (e) {
-      this.reset();
-      this.onEvent?.({ kind: 'error', message: '无法访问麦克风/摄像头，请检查浏览器权限' });
-      return;
-    }
-    this.onEvent?.({ kind: 'local-stream', stream: this.localStream });
     this.onEvent?.({ kind: 'outgoing', media, peerId });
-    await this.createPC();
-    const offer = await this.pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: media === 'video' });
-    await this.pc.setLocalDescription(offer);
-    this.send({ type: 'call_offer', to: peerId, media, sdp: offer.sdp });
     this.noAnswerTimer = setTimeout(() => this.end('no_answer'), 45000);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: media === 'video' });
+      if (generation !== this.generation) { stream.getTracks().forEach(t => t.stop()); return; }
+      this.localStream = stream;
+      this.onEvent?.({ kind: 'local-stream', stream });
+      this.createPC();
+      if (generation !== this.generation) return;
+      const pc = this.pc;
+      const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: media === 'video' });
+      if (generation !== this.generation) return;
+      await pc.setLocalDescription(offer);
+      if (generation !== this.generation) return;
+      this.send({ type: 'call_offer', to: peerId, media, sdp: offer.sdp });
+    } catch (e) {
+      if (generation !== this.generation) return;
+      this.end('error');
+      this.onEvent?.({ kind: 'error', message: '无法建立通话，请检查设备权限和网络' });
+    }
   }
 
   /** 被叫收到来电 */
@@ -67,6 +75,7 @@ export class CallManager {
     this.callId = evt.callId;
     this.pendingSdp = evt.sdp;
     this.state = 'incoming';
+    ++this.generation;
     this.role = 'callee';
     this.onEvent?.({ kind: 'incoming', media: evt.media, peerId: evt.from });
     this.startRing();
@@ -76,25 +85,36 @@ export class CallManager {
   /** 被叫接听 */
   async accept() {
     if (this.state !== 'incoming') return;
+    const generation = this.generation;
+    this.state = 'connecting';     // 同步上锁，重复点击不能启动第二次采集
     this.stopRing();
     clearTimeout(this.incomingTimer);
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: this.media === 'video' });
-    } catch (e) {
-      this.send({ type: 'call_reject', to: this.peerId, reason: 'media_error' });
-      this.reset();
-      this.onEvent?.({ kind: 'error', message: '无法访问麦克风/摄像头，通话已结束' });
-      return;
-    }
-    this.onEvent?.({ kind: 'local-stream', stream: this.localStream });
+    this.incomingTimer = null;
+    this.noAnswerTimer = setTimeout(() => this.end('timeout'), 45000);
     this.onEvent?.({ kind: 'connecting' });
-    await this.createPC();
-    await this.pc.setRemoteDescription({ type: 'offer', sdp: this.pendingSdp });
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
-    this.send({ type: 'call_answer', to: this.peerId, sdp: answer.sdp });
-    // 通知同账号其它标签页：来电已被接听（服务器中继时会排除本连接）
-    this.send({ type: 'call_end', to: this.getMe().id, reason: 'answered' });
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: this.media === 'video' });
+      if (generation !== this.generation) { stream.getTracks().forEach(t => t.stop()); return; }
+      this.localStream = stream;
+      this.onEvent?.({ kind: 'local-stream', stream });
+      this.createPC();
+      const pc = this.pc;
+      await pc.setRemoteDescription({ type: 'offer', sdp: this.pendingSdp });
+      if (generation !== this.generation) return;
+      await this.flushIce(pc);
+      if (generation !== this.generation) return;
+      const answer = await pc.createAnswer();
+      if (generation !== this.generation) return;
+      await pc.setLocalDescription(answer);
+      if (generation !== this.generation) return;
+      this.send({ type: 'call_answer', to: this.peerId, sdp: answer.sdp });
+      // 通知同账号其它标签页：来电已被接听（服务器中继时会排除本连接）
+      this.send({ type: 'call_end', to: this.getMe().id, reason: 'answered' });
+    } catch (e) {
+      if (generation !== this.generation) return;
+      this.end('media_error');
+      this.onEvent?.({ kind: 'error', message: '无法建立通话，请检查设备权限和网络' });
+    }
   }
 
   /** 被叫拒绝 */
@@ -108,19 +128,34 @@ export class CallManager {
   }
 
   async onAnswer(evt) {
-    if (this.state !== 'outgoing' || !this.pc) return;
-    clearTimeout(this.noAnswerTimer);
+    if (this.state !== 'outgoing' || this.callId !== evt.callId || !this.pc) return;
+    const pc = this.pc;
+    this.state = 'connecting';
     try {
-      await this.pc.setRemoteDescription({ type: 'answer', sdp: evt.sdp });
+      await pc.setRemoteDescription({ type: 'answer', sdp: evt.sdp });
+      if (this.pc !== pc) return;
+      await this.flushIce(pc);
     } catch (e) {
-      this.end('error');
+      if (this.pc === pc) this.end('error');
     }
   }
 
   async onIce(evt) {
-    if (!evt.candidate) return;
-    if (!this.pc) { this.iceQueue.push(evt.candidate); return; }   // PC 尚未创建，暂存
+    if (!this.busy || this.callId !== evt.callId || !evt.candidate) return;
+    if (!this.pc?.remoteDescription) {
+      if (this.iceQueue.length < 256) this.iceQueue.push(evt.candidate);
+      return;
+    }
     try { await this.pc.addIceCandidate(evt.candidate); } catch (_) {}
+  }
+
+  async flushIce(pc) {
+    const queue = this.iceQueue;
+    this.iceQueue = [];
+    for (const candidate of queue) {
+      if (this.pc !== pc) return;
+      try { await pc.addIceCandidate(candidate); } catch (_) {}
+    }
   }
 
   onReject(evt) { if (this.callId === evt.callId) this.end('rejected', false); }
@@ -133,9 +168,12 @@ export class CallManager {
 
   onEnd(evt) {
     if (this.callId !== evt.callId) return;
-    if (this.state === 'connected') return;   // 自己已接通的通话不受串扰
-    this.reset();
-    this.onEvent?.({ kind: 'ended', reason: evt.reason });
+    // 同账号其它标签页的接听通知只取消尚未接听的来电，不能吞掉对端挂断。
+    if (evt.reason === 'answered' && evt.from === this.getMe().id) {
+      if (this.state === 'incoming') this.end('answered', false);
+      return;
+    }
+    this.end(evt.reason || 'hangup', false);
   }
 
   onFailed(evt) {
@@ -163,17 +201,19 @@ export class CallManager {
     this.onEvent?.({ kind: 'log', ...info });
   }
 
-  async createPC() {
-    this.pc = new RTCPeerConnection(ICE_SERVERS);
-    this.pc.ontrack = (e) => {
+  createPC() {
+    const pc = this.pc = new RTCPeerConnection(ICE_SERVERS);
+    pc.ontrack = (e) => {
+      if (this.pc !== pc) { e.track?.stop(); return; }
       this.remoteStream = e.streams[0];
       this.onEvent?.({ kind: 'remote-stream', stream: e.streams[0] });
     };
-    this.pc.onicecandidate = (e) => {
-      if (e.candidate) this.send({ type: 'call_ice', to: this.peerId, candidate: e.candidate });
+    pc.onicecandidate = (e) => {
+      if (this.pc === pc && e.candidate) this.send({ type: 'call_ice', to: this.peerId, candidate: e.candidate });
     };
-    this.pc.onconnectionstatechange = () => {
-      const s = this.pc?.connectionState;
+    pc.onconnectionstatechange = () => {
+      if (this.pc !== pc) return;
+      const s = pc.connectionState;
       if (s === 'connected') {
         if (this.state !== 'connected') {
           this.state = 'connected';
@@ -186,11 +226,12 @@ export class CallManager {
           }, 1000);
         }
       } else if (s === 'failed' || s === 'disconnected' || s === 'closed') {
-        if (this.state === 'connected') this.end('network_error');
+        this.end('network_error');
       }
     };
-    this.pc.oniceconnectionstatechange = () => {
-      const s = this.pc?.iceConnectionState;
+    pc.oniceconnectionstatechange = () => {
+      if (this.pc !== pc) return;
+      const s = pc.iceConnectionState;
       if (s === 'disconnected' || s === 'failed' || s === 'completed') {
         this.onEvent?.({ kind: 'iceState', state: s });
       }
@@ -198,13 +239,11 @@ export class CallManager {
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => this.pc.addTrack(t, this.localStream));
     }
-    // 补发暂存的 ICE 候选
-    for (const c of this.iceQueue) { try { await this.pc.addIceCandidate(c); } catch (_) {} }
-    this.iceQueue = [];
+    // ICE 必须等 remoteDescription 设置成功后再补发。
   }
 
   send(obj) {
-    this.socket?.send({ ...obj, callId: this.callId });
+    this.socket?.send({ callId: this.callId, ...obj });
   }
 
   toggleMute() {
@@ -221,43 +260,69 @@ export class CallManager {
 
   /** 视频通话切换前后摄像头（replaceTrack，无需重新协商） */
   async switchCamera() {
-    if (!this.pc || this.media !== 'video') return;
-    const sender = this.pc.getSenders().find((s) => s.track?.kind === 'video');
-    if (!sender) return;
-    const cur = this.localStream?.getVideoTracks()[0]?.getSettings().facingMode;
-    const next = cur === 'user' ? 'environment' : 'user';
-    let newStream;
+    if (!this.pc || this.media !== 'video' || this.switchingCamera) return;
+    const pc = this.pc, stream = this.localStream, generation = this.generation;
+    const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+    const old = stream?.getVideoTracks()[0];
+    if (!sender || !old) return;
+    const next = old.getSettings().facingMode === 'user' ? 'environment' : 'user';
+    this.switchingCamera = true;
+    let newStream, adopted = false;
     try {
       newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: next } });
+      if (generation !== this.generation) return;
+      this.pendingCameraStream = newStream; // replaceTrack 未完成时，reset 也能立即停掉轨道
+      const newTrack = newStream.getVideoTracks()[0];
+      if (!newTrack) throw new Error('摄像头没有视频轨道');
+      newTrack.enabled = old.enabled;
+      await sender.replaceTrack(newTrack);
+      if (generation !== this.generation) return;
+      stream.removeTrack(old);
+      old.stop();
+      stream.addTrack(newTrack);
+      adopted = true;
+      newStream.getTracks().filter(t => t !== newTrack).forEach(t => t.stop());
+      this.onEvent?.({ kind: 'local-stream', stream });
     } catch (e) {
-      this.onEvent?.({ kind: 'error', message: '无法切换摄像头' });
-      return;
+      if (generation === this.generation) this.onEvent?.({ kind: 'error', message: '无法切换摄像头' });
+    } finally {
+      if (!adopted) newStream?.getTracks().forEach(t => t.stop());
+      if (generation === this.generation) {
+        this.pendingCameraStream = null;
+        this.switchingCamera = false;
+      }
     }
-    const newTrack = newStream.getVideoTracks()[0];
-    await sender.replaceTrack(newTrack);
-    const old = this.localStream.getVideoTracks()[0];
-    this.localStream.removeTrack(old);
-    old.stop();
-    this.localStream.addTrack(newTrack);
-    this.onEvent?.({ kind: 'local-stream', stream: this.localStream });
   }
 
   reset() {
+    ++this.generation;
     clearInterval(this.timer);
     clearTimeout(this.noAnswerTimer);
     clearTimeout(this.incomingTimer);
+    this.timer = this.noAnswerTimer = this.incomingTimer = null;
     this.stopRing();
-    this.localStream?.getTracks().forEach((t) => t.stop());
-    this.localStream = null;
-    if (this.pc) { try { this.pc.close(); } catch (_) {} this.pc = null; }
+    const pc = this.pc;
+    this.pc = null;                 // 先失效回调，close 不能再次进入 end/reset
+    if (pc) {
+      pc.ontrack = pc.onicecandidate = pc.onconnectionstatechange = pc.oniceconnectionstatechange = null;
+      try { pc.close(); } catch (_) {}
+    }
+    for (const stream of [this.localStream, this.remoteStream, this.pendingCameraStream]) {
+      stream?.getTracks().forEach(t => t.stop());
+    }
+    this.localStream = this.remoteStream = this.pendingCameraStream = null;
+    this.switchingCamera = false;
+    this.iceQueue = [];
+    this.connectedOnce = false;
+    this.connectedAt = null;
     this.state = 'idle';
-    this.callId = null;
-    this.pendingSdp = null;
+    this.callId = this.peerId = this.pendingSdp = null;
     this.onEvent?.({ kind: 'reset' });
   }
 
   /* 来电铃声：WebAudio 合成（无外部音频文件） */
   startRing() {
+    this.stopRing();
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       this.ringCtx = new Ctx();
@@ -282,11 +347,14 @@ export class CallManager {
         this.ringTimer = setTimeout(loop, 2100);
       };
       loop();
-    } catch (_) {}
+    } catch (_) { this.stopRing(); }
   }
 
   stopRing() {
     clearTimeout(this.ringTimer);
-    if (this.ringCtx) { try { this.ringCtx.close(); } catch (_) {} this.ringCtx = null; }
+    this.ringTimer = null;
+    const ctx = this.ringCtx;
+    this.ringCtx = null;
+    try { ctx?.close().catch(() => {}); } catch (_) {}
   }
 }

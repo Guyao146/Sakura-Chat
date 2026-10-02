@@ -81,6 +81,7 @@ export async function initApp({ token, user, sessionId, sessionKey }) {
 function logout() {
   draftStore?.clear();
   draftStore = null;
+  releaseMedia();
   state.socket?.close();
   localStorage.removeItem('sc_token');
   setToken(null);
@@ -100,7 +101,17 @@ function restoreDraft(convId) {
   renderReplyBar();
 }
 
-window.addEventListener('pagehide', saveCurrentDraft);
+function releaseMedia() {
+  state.call?.end('hangup');
+  state.recorder?.stop(true);
+  stopVoice();
+  $('#voice-recording').hidden = true;
+}
+
+window.addEventListener('pagehide', () => {
+  saveCurrentDraft();
+  releaseMedia();
+});
 
 /* ---------------- 侧边栏宽度拖拽（持久化） ---------------- */
 const SIDEBAR_W_KEY = 'sc_sidebar_width';
@@ -382,7 +393,7 @@ async function openConv(convId) {
   saveCurrentDraft();
   if (state.activeConvId) state.socket?.send({ type: 'typing', convId: state.activeConvId, typing: false });
   // 切换会话前取消未完成的录音；等待期间再次切换时，以最后一次操作为准。
-  if (state.recorder?.recording) {
+  if (state.recorder?.busy) {
     await state.recorder.stop(true);
     if (version !== chatVersion) return;
     $('#voice-recording').hidden = true;
@@ -1560,13 +1571,14 @@ function bindVoiceRecorder() {
 
   btn.addEventListener('pointerdown', async (e) => {
     if (state.call?.busy) { toast('通话中无法录音'); return; }
+    if (recorder.busy || !state.activeConvId) return;
     e.preventDefault();
     startY = e.clientY;
     cancelling = false;
     rec.classList.remove('cancel');
     tipEl.textContent = '松开发送 · 上滑取消';
     try {
-      await recorder.start();
+      if (!await recorder.start()) return;
       rec.hidden = false;
       recorder.onTick = (ms) => { timeEl.textContent = Math.round(ms / 1000) + '"'; };
     } catch (err) {
@@ -1582,12 +1594,15 @@ function bindVoiceRecorder() {
   });
 
   const finish = async (cancel) => {
-    if (!recorder.recording) return;
+    if (!recorder.busy) return;
+    const convId = state.activeConvId;
     rec.hidden = true;
     const result = await recorder.stop(cancel);
-    if (cancel || !result) return;
+    if (cancel || !result || state.activeConvId !== convId) return;
     sendVoice(result.blob, result.duration, result.peaks);
   };
+  recorder.onLimit = () => finish(cancelling);
+  recorder.onError = err => { rec.hidden = true; toast(err.message); };
   btn.addEventListener('pointerup', () => finish(cancelling));
   btn.addEventListener('pointerleave', () => finish(true));   // 手指离开按钮 = 取消
   btn.addEventListener('pointercancel', () => finish(true));
@@ -1599,6 +1614,8 @@ function startCallFromConv(media) {
   const conv = convOf(state.activeConvId);
   if (!conv || conv.convType !== 'single') { toast('目前仅支持好友间 1 对 1 通话'); return; }
   if (!conv.peer.online) { toast('对方不在线'); return; }
+  state.recorder?.stop(true);
+  $('#voice-recording').hidden = true;
   state.call?.start(conv.peer.id, media);
 }
 
@@ -1621,7 +1638,11 @@ function handleCallEvent(evt) {
     case 'tick': $('#call-timer').textContent = fmtCallDur(evt.secs); break;
     case 'remote-stream': $('#call-remote').srcObject = evt.stream; break;
     case 'local-stream': $('#call-local').srcObject = evt.stream; break;
-    case 'incoming': showIncomingCall(evt); break;
+    case 'incoming':
+      state.recorder?.stop(true);
+      $('#voice-recording').hidden = true;
+      showIncomingCall(evt);
+      break;
     case 'busy': hideCallWindow(); toast('对方正忙，请稍后再试'); break;
     case 'rejected': hideCallWindow(); toast('对方已拒绝'); break;
     case 'ended':
@@ -1631,8 +1652,11 @@ function handleCallEvent(evt) {
       else if (evt.reason === 'network_error') toast('网络异常，通话已结束');
       else if (evt.reason === 'timeout') toast('超时未接听');
       break;
-    case 'error': hideCallWindow(); toast(evt.message || '通话出错'); break;
-    case 'reset': hideCallWindow(); break;
+    case 'error':
+      if (!state.call?.busy) hideCallWindow();
+      toast(evt.message || '通话出错');
+      break;
+    case 'reset': hideCallWindow(); closeIncomingCall(); break;
     case 'log':
       // 只由主叫方记录流水，避免双方各记一条
       if (evt.role === 'caller') logCall(evt);
@@ -1670,7 +1694,6 @@ function showCallWindow(media, peerId, status) {
 
 function hideCallWindow() {
   const win = $('#call-window');
-  if (win.hidden) return;
   win.hidden = true;
   $('#call-remote').srcObject = null;
   $('#call-local').srcObject = null;

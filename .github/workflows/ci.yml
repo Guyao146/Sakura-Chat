@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: 语法检查 + E2E 回归
+    name: 语法检查 + 单元测试 + E2E 回归
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +39,9 @@ jobs:
             rm -f "$tmp"
           done
           echo "frontend syntax ok"
+
+      - name: 单元测试（草稿 + 媒体资源生命周期）
+        run: node --test test/*.test.mjs
 
       - name: 后台启动服务（端口 3100）
         run: |
