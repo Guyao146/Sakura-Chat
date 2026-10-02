@@ -8,7 +8,7 @@
 const { WebSocketServer } = require('ws');
 const token = require('./token');
 const state = require('./state');
-const { decrypt, encrypt, encryptMessageContent } = require('./crypto');
+const { decrypt, encryptMessageContent } = require('./crypto');
 const { db, singleConvId, groupConvId, getUserById } = require('./db');
 const svc = require('./services');
 const { insertSystemMessage } = require('./messaging');
@@ -17,15 +17,10 @@ const config = require('./config');
 
 const KINDS = new Set(['text', 'image', 'emoji', 'file', 'voice', 'sticker']);
 
-function send(ws, obj) {
-  if (ws.readyState !== 1) return;
-  const key = state.getKey(ws.userId, ws.sessionId);
-  const data = key ? { sid: ws.sessionId, d: encrypt(key, JSON.stringify(obj)) } : obj;
-  ws.send(JSON.stringify(data));
-}
+function send(ws, obj) { state.sendSocket(ws, obj); }
 
 function attach(server) {
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 256 * 1024 });
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url, 'http://localhost');
     const payload = token.verify(url.searchParams.get('token') || '');
@@ -56,6 +51,7 @@ function attach(server) {
 
   // 心跳：30s 探活，超时连接直接终止
   const interval = setInterval(() => {
+    state.pruneSessions();
     for (const ws of wss.clients) {
       if (!ws.isAlive) { ws.terminate(); continue; }
       ws.isAlive = false;

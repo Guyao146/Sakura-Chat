@@ -60,8 +60,28 @@ function hashPassword(password, salt) {
   return crypto.scryptSync(password, salt, 64, SCRYPT_OPTS).toString('hex');
 }
 
-function verifyPassword(password, salt, expectedHash) {
-  const actual = crypto.scryptSync(password, salt, 64, SCRYPT_OPTS);
+// 启动时系统账号仍可使用同步版本；请求路径仅使用有并发上限的异步 scrypt。
+let passwordJobs = 0;
+async function derivePassword(password, salt) {
+  if (passwordJobs >= 4) {
+    const err = new Error('登录繁忙，请稍后重试');
+    err.status = 429;
+    throw err;
+  }
+  passwordJobs++;
+  try {
+    return await new Promise((resolve, reject) => {
+      crypto.scrypt(password, salt, 64, SCRYPT_OPTS, (err, key) => err ? reject(err) : resolve(key));
+    });
+  } finally { passwordJobs--; }
+}
+
+async function hashPasswordAsync(password, salt) {
+  return (await derivePassword(password, salt)).toString('hex');
+}
+
+async function verifyPassword(password, salt, expectedHash) {
+  const actual = await derivePassword(password, salt);
   const expected = Buffer.from(expectedHash, 'hex');
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
@@ -76,6 +96,6 @@ module.exports = {
   encrypt, decrypt,
   encryptMessageContent, decryptMessageContent,
   genSessionKey,
-  makeSalt, hashPassword, verifyPassword,
+  makeSalt, hashPassword, hashPasswordAsync, verifyPassword,
   genId,
 };

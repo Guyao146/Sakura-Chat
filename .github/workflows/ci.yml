@@ -40,7 +40,7 @@ jobs:
           done
           echo "frontend syntax ok"
 
-      - name: 单元测试（草稿 + 媒体资源生命周期）
+      - name: 单元测试（草稿 + 媒体资源生命周期 + 性能边界）
         run: node --test test/*.test.mjs
 
       - name: 后台启动服务（端口 3100）

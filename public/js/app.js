@@ -9,6 +9,7 @@ import { CallManager } from './lib/call.js';
 import { bindResizeHandle } from './lib/resize.js';
 import { DraftStore } from './lib/drafts.js';
 import { safeUrl } from './lib/util.js';
+import { KeyedList, singleFlight, pruneMessageCache, dropMessageCache } from './lib/performance.js';
 
 const state = {
   me: null,
@@ -37,6 +38,12 @@ let statusInited = false;      // 在线状态是否已初始化
 let draftStore = null;
 let chatVersion = 0;           // 旧请求完成后不得覆盖新会话
 let searchVersion = 0;
+let searchController = null;
+let searchPage = null;
+const messageHtmlCache = new WeakMap();
+let messageDOM = null, conversationDOM = null;
+const getUserOnce = singleFlight(id => api.getUser(id));
+const getConversationsOnce = singleFlight(() => api.conversations());
 const INPUT_H_KEY = 'sakura-input-height-v2';   // 用户拖拽设定的输入框高度；未存 = 单行默认（v2：弃用旧版"占满"脏值）
 const MSG_LIST_MIN = 120;                    // 消息列表最小保留高度（仅文档说明，实际由 flex 引擎保证）
 const INPUT_MIN = 40;                        // 输入框最小/默认高度（单行）
@@ -275,18 +282,22 @@ function cacheUser(u) {
   if (u && u.id) state.users.set(u.id, u);
 }
 function cacheUsers(ids) {
-  for (const id of ids) {
-    if (!id || state.users.has(id) || id === state.me.id) continue;
-    api.getUser(id).then(({ user }) => cacheUser(user)).catch(() => {});
+  for (const id of new Set(ids)) {
+    if (!id || (state.users.has(id) && !state.users.get(id).placeholder) || id === state.me.id) continue;
+    getUserOnce(id).then(({ user }) => cacheUser(user)).catch(() => {});
   }
 }
 function senderOf(msg) {
   if (msg.senderId === state.me.id) return state.me;
-  return state.users.get(msg.senderId) || { nickname: '用户' + msg.senderId };
+  const known = state.users.get(msg.senderId);
+  if (known) return known;
+  const placeholder = { id: msg.senderId, nickname: '用户' + msg.senderId, placeholder: true };
+  state.users.set(msg.senderId, placeholder);
+  return placeholder;
 }
 
 async function loadConversations() {
-  const { conversations } = await api.conversations();
+  const { conversations } = await getConversationsOnce('all');
   state.conversations = conversations;
   state.convMap = new Map(conversations.map(c => [c.convId, c]));
   for (const c of conversations) if (c.convType === 'single') cacheUser(c.peer);
@@ -332,15 +343,28 @@ function renderConvList() {
     );
   }
   const list = $('#conv-list');
+  conversationDOM ||= new KeyedList(list);
   if (!convs.length) {
-    list.innerHTML = `<div class="no-data">${q ? '没有匹配的会话' : '暂无会话，点击 ➕ 添加好友'}</div>`;
+    conversationDOM.render([['empty', `<div class="no-data">${q ? '没有匹配的会话' : '暂无会话，点击 ➕ 添加好友'}</div>`]]);
     return;
   }
-  // 仅对「新增」的会话播放出现动画，避免整列表重渲时闪烁；搜索结果不动画
+  const previous = new Set(lastConvIds);
   const ids = convs.map(c => c.convId);
-  const newSet = q ? new Set() : new Set(ids.filter(id => !lastConvIds.includes(id)));
   lastConvIds = ids;
-  list.innerHTML = convs.map(c => convItemHtml(c, newSet.has(c.convId))).join('');
+  conversationDOM.render(convs.map(c => [c.convId, convItemHtml(c, false)]))
+    .forEach(node => { if (!q && !previous.has(node.dataset.convid)) node.classList.add('anim-in'); });
+}
+
+function updateConvItem(convId) {
+  const conv = convOf(convId);
+  const item = conversationDOM?.items.get(convId);
+  if (!conv || !item) return;
+  // 草稿只更新预览，避免每次按键遍历/重建整个会话侧栏。
+  const html = convItemHtml(conv, false);
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  item.node.querySelector('.conv-last').innerHTML = template.content.querySelector('.conv-last').innerHTML;
+  item.html = html;
 }
 
 function convItemHtml(c, anim) {
@@ -390,6 +414,8 @@ async function openConv(convId) {
   if (!conv) return;
   const version = ++chatVersion;
   ++searchVersion;
+  searchController?.abort();
+  searchPage = null;
   saveCurrentDraft();
   if (state.activeConvId) state.socket?.send({ type: 'typing', convId: state.activeConvId, typing: false });
   // 切换会话前取消未完成的录音；等待期间再次切换时，以最后一次操作为准。
@@ -402,6 +428,9 @@ async function openConv(convId) {
   clearTimeout(state.typingTimer);
   $('#typing-hint').hidden = true;
   state.activeConvId = convId;
+  const cached = state.messages.get(convId);
+  if (cached) { state.messages.delete(convId); state.messages.set(convId, cached); }
+  pruneMessageCache(state);
   restoreDraft(convId);
   if (!state.messages.has(convId)) state.messages.set(convId, []);
   $('#chat-empty').hidden = true;
@@ -625,25 +654,29 @@ function buildMsgNodes(msgs) {
   let unreadDividerPlaced = false;
   for (const m of msgs) {
     if (m.createdAt - lastTs > 5 * 60 * 1000) {
-      out.push(`<div class="msg-time">${formatTime(m.createdAt)}</div>`);
+      out.push(['time:' + m.msgId, `<div class="msg-time">${formatTime(m.createdAt)}</div>`]);
     }
     // 未读分界线（Discord/Slack 式）：第一条晚于上次已读时间的消息前插入
     if (!unreadDividerPlaced && lastReadTs && m.createdAt > lastReadTs
         && m.senderId !== state.me.id && m.kind !== 'system') {
       unreadDividerPlaced = true;
-      out.push('<div class="msg-unread-line"><span>以下是新消息</span></div>');
+      out.push(['unread:' + m.msgId, '<div class="msg-unread-line"><span>以下是新消息</span></div>']);
     }
     lastTs = m.createdAt;
-    out.push(msgRowHtml(m));
+    const sender = senderOf(m);
+    let cached = messageHtmlCache.get(m);
+    if (!cached || cached.sender !== sender) {
+      cached = { sender, html: msgRowHtml(m) };
+      messageHtmlCache.set(m, cached);
+    }
+    out.push(['msg:' + m.msgId, cached.html]);
   }
-  return out.join('');
+  return out;
 }
 
 function msgRowHtml(m) {
   if (m.kind === 'system') {
     if (m.isPat) {
-      // 拍一拍：被拍对象在自己这里触发头像抖动
-      if (m.patTo && m.patTo === state.me.id) schedulePatShake();
       return `<div class="msg-system msg-pat">${escapeHtml(m.content.text || '')}</div>`;
     }
     return `<div class="msg-system">${escapeHtml(m.content.text || '')}</div>`;
@@ -764,7 +797,7 @@ function toggleVoice(bubble) {
 }
 
 function stopVoice() {
-  if (voiceAudio) { voiceAudio.pause(); voiceAudio = null; }
+  if (voiceAudio) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load(); voiceAudio = null; }
   if (voiceBubble) {
     voiceBubble.classList.remove('playing');
     voiceBubble.querySelectorAll('.voice-bars i').forEach(b => b.classList.remove('on'));
@@ -786,15 +819,37 @@ function renderMessages(preservePos = false, animateLast = false) {
   const msgs = state.messages.get(state.activeConvId) || [];
   const beforeH = list.scrollHeight;
   const beforeTop = list.scrollTop;
-  list.innerHTML = buildMsgNodes(msgs);
-  if (animateLast) {
+  messageDOM ||= new KeyedList(list);
+  const added = messageDOM.render(buildMsgNodes(msgs));
+  if (animateLast && added.includes(list.lastElementChild)) {
     const last = list.lastElementChild;
-    if (last && last.classList.contains('msg-row')) last.classList.add('msg-in');
+    if (last?.classList.contains('msg-row')) last.classList.add('msg-in');
   }
   if (preservePos) {
     list.scrollTop = list.scrollHeight - beforeH + beforeTop;
   } else {
     list.scrollTop = list.scrollHeight;
+  }
+}
+
+function updateMessage(m, statusOnly = false) {
+  messageHtmlCache.delete(m);
+  if (!isConvActive(m.convId)) return;
+  const item = messageDOM?.items.get('msg:' + m.msgId);
+  if (!item || !item.node.isConnected) return;
+  const html = msgRowHtml(m);
+  messageHtmlCache.set(m, { sender: senderOf(m), html });
+  if (statusOnly) {
+    const old = item.node.querySelector('.msg-status');
+    if (old) old.outerHTML = statusLabelOf(m);
+    item.html = html;
+  } else {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const node = template.content.firstElementChild;
+    item.node.replaceWith(node);
+    item.node = node;
+    item.html = html;
   }
 }
 
@@ -816,6 +871,7 @@ function mergeMessages(convId, messages) {
   state.messages.set(convId, merged);
   for (const m of merged) state.msgMap.set(m.msgId, m);
   cacheUsers(merged.map(m => m.senderId));
+  pruneMessageCache(state);
 }
 
 /** 把消息加入本地状态、更新会话预览与排序 */
@@ -837,6 +893,7 @@ function pushMessage(msg, isNew) {
   if (index < 0) list.push(msg);
   else list[index] = msg;
   state.conversations.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.lastTime - a.lastTime);
+  pruneMessageCache(state);
 }
 
 /* ---------------- 事件绑定 ---------------- */
@@ -938,7 +995,7 @@ function bindChatEvents() {
     autoResize(input);
     if (!state.activeConvId) return;
     saveCurrentDraft();
-    renderConvList();
+    updateConvItem(state.activeConvId);
     const convId = state.activeConvId;
     sendTyping(convId, true);
     clearTimeout(typingEndTimer);
@@ -1053,12 +1110,14 @@ function bindChatEvents() {
 
   $('#btn-search-history').onclick = () => {
     ++searchVersion;
+    searchController?.abort();
+    searchPage = null;
     $('#search-panel').hidden = false;
     $('#history-search-input').value = '';
     $('#search-results').innerHTML = '<div class="search-empty">输入关键词后回车搜索</div>';
     $('#history-search-input').focus();
   };
-  $('#btn-close-search').onclick = () => { ++searchVersion; $('#search-panel').hidden = true; };
+  $('#btn-close-search').onclick = () => { ++searchVersion; searchController?.abort(); searchPage = null; $('#search-panel').hidden = true; };
   $('#history-search-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') searchHistory(e.target.value.trim());
   });
@@ -1168,7 +1227,7 @@ function onServerError(obj) {
   const m = obj.msgId && state.msgMap.get(obj.msgId);
   if (m && m.status === 'sending') {
     m.status = 'failed';
-    if (isConvActive(m.convId)) renderMessages(false);
+    updateMessage(m, true);
   }
   if (obj.code === 'too_large') toast('消息内容过大，请分段发送');
   else if (obj.code === 'msg_id_conflict') toast('消息发送冲突，请刷新后重试');
@@ -1183,6 +1242,7 @@ async function onIncomingMessage(msg) {
   }
   cacheUsers([msg.senderId]);
   const duplicate = state.msgMap.has(msg.msgId);
+  if (!duplicate && msg.isPat && msg.patTo === state.me.id) schedulePatShake();
   pushMessage(msg, true);
   if (isConvActive(convId)) renderMessages(false, true);
 
@@ -1201,26 +1261,24 @@ function onAck(obj) {
   m.id = obj.serverId;
   if (Number.isFinite(obj.ts)) m.createdAt = obj.ts;
   if (m.status !== 'read') m.status = obj.delivered ? 'delivered' : 'sent';
-  if (isConvActive(m.convId)) renderMessages(false);
+  updateMessage(m, true);
 }
 
 function onStatus(obj) {
   const m = state.msgMap.get(obj.msgId);
   if (!m || !obj.status) return;
   if (m.status !== 'read') m.status = obj.status;
-  if (isConvActive(m.convId)) renderMessages(false);
+  updateMessage(m, true);
 }
 
 function onRead(obj) {
   const list = state.messages.get(obj.convId) || [];
-  let changed = false;
   for (const m of list) {
     if (m.senderId === state.me.id && m.id && m.createdAt <= obj.ts && !m.revoked && m.status !== 'read' && m.status !== 'failed') {
       m.status = 'read';
-      changed = true;
+      updateMessage(m, true);
     }
   }
-  if (changed && isConvActive(obj.convId)) renderMessages(false);
 }
 
 function onTyping(obj) {
@@ -1253,7 +1311,7 @@ function onReact(obj) {
   const m = state.msgMap.get(obj.msgId);
   if (!m) return;
   m.reactions = obj.reactions || null;
-  if (isConvActive(m.convId)) renderMessages(true);
+  updateMessage(m);
 }
 
 function onEditMessage(obj) {
@@ -1264,7 +1322,7 @@ function onEditMessage(obj) {
   m.editedAt = obj.editedAt;
   const conv = convOf(m.convId);
   if (conv && conv.lastMessage?.msgId === m.msgId) conv.lastMessage = { ...m };
-  if (isConvActive(m.convId)) renderMessages(true);
+  updateMessage(m);
 }
 
 function onGroupAnnouncement(obj) {
@@ -1279,7 +1337,7 @@ function onRecall(obj) {
   const m = state.msgMap.get(obj.msgId);
   if (!m) return;
   m.revoked = true;
-  if (isConvActive(m.convId)) renderMessages(false);
+  updateMessage(m);
 }
 
 async function onFriendRequest(obj) {
@@ -1316,8 +1374,12 @@ function onGroupDismissed(obj) {
   state.conversations = state.conversations.filter(c => c.convId !== convId);
   state.convMap.delete(convId);
   draftStore?.set(convId, '', null);
-  state.messages.delete(convId);
+  dropMessageCache(state, convId);
   if (state.activeConvId === convId) {
+    messageDOM?.clear();
+    stopVoice();
+    searchController?.abort();
+    searchPage = null;
     ++chatVersion;
     ++searchVersion;
     state.activeConvId = null;
@@ -1369,7 +1431,7 @@ async function sendMessage() {
   if (!ok) {
     msg.status = 'failed';
     toast('发送失败：连接已断开，正在重连');
-    renderMessages(false);
+    updateMessage(msg, true);
   }
 }
 
@@ -1445,7 +1507,7 @@ async function sendImage(file) {
     type: 'chat',
     msg: { msgId, convType: msg.convType, to: msg.to, groupId: msg.groupId, kind: 'image', content: { url } },
   });
-  if (!ok) { msg.status = 'failed'; toast('发送失败'); renderMessages(false); }
+  if (!ok) { msg.status = 'failed'; toast('发送失败'); updateMessage(msg, true); }
 }
 
 /** 发送任意文件（QQ/微信式：支持拖拽与选择） */
@@ -1480,7 +1542,7 @@ async function sendFile(file) {
   const out = { msgId, convType: msg.convType, to: msg.to, groupId: msg.groupId, kind: 'file', content };
   if (reply) { out.replyTo = reply.msgId; out.replySnip = reply.snip; }
   const ok = await state.socket.send({ type: 'chat', msg: out });
-  if (!ok) { msg.status = 'failed'; toast('发送失败'); renderMessages(false); }
+  if (!ok) { msg.status = 'failed'; toast('发送失败'); updateMessage(msg, true); }
 }
 
 /* ---------------- 表情包 / 语音 ---------------- */
@@ -1504,7 +1566,7 @@ async function sendSticker(url) {
     type: 'chat',
     msg: { msgId, convType: msg.convType, to: msg.to, groupId: msg.groupId, kind: 'sticker', content },
   });
-  if (!ok) { msg.status = 'failed'; toast('发送失败'); renderMessages(false); }
+  if (!ok) { msg.status = 'failed'; toast('发送失败'); updateMessage(msg, true); }
 }
 
 async function sendVoice(blob, duration, peaks) {
@@ -1537,7 +1599,7 @@ async function sendVoice(blob, duration, peaks) {
     type: 'chat',
     msg: { msgId, convType: msg.convType, to: msg.to, groupId: msg.groupId, kind: 'voice', content },
   });
-  if (!ok) { msg.status = 'failed'; toast('发送失败'); renderMessages(false); }
+  if (!ok) { msg.status = 'failed'; toast('发送失败'); updateMessage(msg, true); }
 }
 
 function blobToBase64(blob) {
@@ -1837,7 +1899,7 @@ async function forwardMessageTo(m, target, fromWho) {
   if (ok) toast('已提交转发');
   else {
     local.status = 'failed';
-    if (isConvActive(target.convId)) renderMessages(true);
+    updateMessage(local, true);
     toast('转发失败');
   }
 }
@@ -1886,30 +1948,39 @@ async function loadOlder() {
   }
 }
 
-async function searchHistory(q) {
+async function searchHistory(q, before = null) {
   const convId = state.activeConvId;
   const version = ++searchVersion;
+  searchController?.abort();
+  const controller = searchController = new AbortController();
   if (!convId || !q) return;
   const box = $('#search-results');
+  if (!before) { searchPage = { convId, q, results: [], nextBefore: null }; }
   box.innerHTML = '<div class="search-empty">搜索中...</div>';
   try {
-    const { results } = await api.searchHistory(convId, q);
+    const { results, nextBefore } = await api.searchHistory(convId, q, before, controller.signal);
     if (version !== searchVersion || !isConvActive(convId) || $('#search-panel').hidden) return;
-    if (!results.length) {
-      box.innerHTML = '<div class="search-empty">没有找到相关聊天记录</div>';
-      return;
-    }
-    box.innerHTML = results.map(m => `
+    searchPage.results.push(...results);
+    searchPage.nextBefore = nextBefore;
+    box.innerHTML = searchPage.results.map(m => `
       <div class="search-result-item" data-msgid="${escapeHtml(m.msgId)}">
         <div>${escapeHtml(previewText(m))}</div>
         <div class="time">${escapeHtml(m.senderId === state.me.id ? '我' : (senderOf(m)?.nickname || ''))} · ${formatTime(m.createdAt)}</div>
-      </div>`).join('');
+      </div>`).join('') || `<div class="search-empty">${nextBefore ? '本批记录无匹配，可继续搜索更早记录' : '没有找到相关聊天记录'}</div>`;
+    if (nextBefore) box.insertAdjacentHTML('beforeend', '<button class="modal-btn ghost" data-search-more>继续搜索更早记录</button>');
   } catch (e) {
-    if (version === searchVersion && isConvActive(convId)) box.innerHTML = `<div class="search-empty">搜索失败：${escapeHtml(e.message)}</div>`;
+    if (e.name !== 'AbortError' && version === searchVersion && isConvActive(convId)) {
+      box.innerHTML = `<div class="search-empty">搜索失败：${escapeHtml(e.message)}</div>`;
+      if (before) box.insertAdjacentHTML('beforeend', '<button class="modal-btn ghost" data-search-more>重试</button>');
+    }
   }
 }
 
 $('#search-results').addEventListener('click', (e) => {
+  if (e.target.closest('[data-search-more]') && searchPage?.convId === state.activeConvId) {
+    searchHistory(searchPage.q, searchPage.nextBefore);
+    return;
+  }
   const item = e.target.closest('.search-result-item');
   if (!item) return;
   $('#search-panel').hidden = true;
@@ -2148,10 +2219,14 @@ async function openConvInfoModal() {
       try {
         await api.deleteFriend(p.id);
         state.conversations = state.conversations.filter(c => c.convId !== conv.convId);
-        state.messages.delete(conv.convId);
+        dropMessageCache(state, conv.convId);
         state.convMap.delete(conv.convId);
         draftStore?.set(conv.convId, '', null);
         if (isConvActive(conv.convId)) {
+          messageDOM?.clear();
+          stopVoice();
+          searchController?.abort();
+          searchPage = null;
           ++chatVersion;
           ++searchVersion;
           state.activeConvId = null;

@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const fs = require('node:fs');
+const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const config = require('../config');
@@ -17,7 +17,7 @@ const EXT_WHITELIST = new Set([
 ]);
 
 /** Base64 图片/文件上传，落盘到 public/uploads（静态目录可直接访问） */
-router.post('/', (req, res) => {
+router.post('/', async (req, res, next) => {
   const { data, filename } = req.body || {};
   if (typeof data !== 'string' || !data.startsWith('data:')) {
     return res.status(400).json({ error: '仅支持 data:base64 格式' });
@@ -35,7 +35,8 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: '不支持的文件类型：' + ext });
   }
   const name = crypto.randomUUID() + '.' + ext;
-  fs.writeFileSync(path.join(config.uploadsDir, name), buf);
+  try { await fs.writeFile(path.join(config.uploadsDir, name), buf); }
+  catch (err) { return next(err); }
   res.json({ url: '/uploads/' + name, size: buf.length });
 });
 

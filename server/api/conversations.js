@@ -7,24 +7,16 @@ const { decryptMessageContent } = require('../crypto');
 const state = require('../state');
 const config = require('../config');
 const { isSystemUsername } = require('../system');
+const { positiveInteger, searchHistory } = require('../history-search');
 
 const router = express.Router();
 
-function lastMessageOf(convId) {
-  return db.prepare('SELECT * FROM messages WHERE conv_id = ? ORDER BY id DESC LIMIT 1').get(convId) || null;
-}
-
-function unreadOf(userId, convId) {
-  const r = db.prepare('SELECT count FROM unread_counts WHERE user_id = ? AND conv_id = ?').get(userId, convId);
-  return r ? r.count : 0;
-}
-
 /** 数据库行 -> 前端消息对象（解密内容） */
-function toMsgVO(m, viewerId) {
+function toMsgVO(m, viewerId, content = decryptMessageContent(m.content_enc)) {
   const vo = {
     id: m.id, msgId: m.msg_id, convType: m.conv_type, convId: m.conv_id,
     senderId: m.sender_id, groupId: m.group_id, kind: m.kind,
-    content: decryptMessageContent(m.content_enc),
+    content,
     createdAt: m.created_at, revoked: !!m.revoked,
   };
   if (m.reply_to) vo.replyTo = m.reply_to;
@@ -48,33 +40,19 @@ function settingsOf(userId, convId) {
   return { pinned: r ? !!r.pinned : false, muted: r ? !!r.muted : false };
 }
 
-/** 会话最后已读时间戳（用于未读分界线） */
-function lastReadTsOf(userId, convId) {
-  const r = db.prepare('SELECT last_read_ts FROM unread_counts WHERE user_id = ? AND conv_id = ?')
-    .get(userId, convId);
-  return r ? r.last_read_ts : 0;
-}
-
 /** 会话列表（最近聊天排序，含未读数与最后一条消息） */
 router.get('/', (req, res) => {
   const me = req.user.id;
   const items = [];
 
   const friends = friendList(me);
+  const users = new Map(db.prepare('SELECT * FROM users WHERE id IN (SELECT value FROM json_each(?))')
+    .all(JSON.stringify(friends.map(f => f.uid))).map(u => [u.id, u]));
   for (const f of friends) {
-    const convId = singleConvId(me, f.uid);
-    const last = lastMessageOf(convId);
-    const u = getUserById(f.uid);
-    const st = settingsOf(me, convId);
-    items.push({
-      convId, convType: 'single',
-      peer: { ...safeUser(u), remark: f.remark, online: state.isOnline(f.uid) },
-      unread: unreadOf(me, convId),
-      lastMessage: last ? toMsgVO(last, me) : null,
-      lastTime: last ? last.created_at : 0,
-      pinned: st.pinned, muted: st.muted,
-      lastReadTs: lastReadTsOf(me, convId),
-    });
+    const u = users.get(f.uid);
+    if (!u) continue;
+    items.push({ convId: singleConvId(me, f.uid), convType: 'single',
+      peer: { ...safeUser(u), remark: f.remark, online: state.isOnline(f.uid) } });
   }
 
   const groups = db.prepare(`
@@ -82,18 +60,21 @@ router.get('/', (req, res) => {
     WHERE m.user_id = ?
   `).all(me);
   for (const g of groups) {
-    const convId = groupConvId(g.id);
-    const last = lastMessageOf(convId);
-    const st = settingsOf(me, convId);
-    items.push({
-      convId, convType: 'group',
-      group: { id: g.id, name: g.name, avatar: g.avatar },
-      unread: unreadOf(me, convId),
-      lastMessage: last ? toMsgVO(last, me) : null,
-      lastTime: last ? last.created_at : 0,
-      pinned: st.pinned, muted: st.muted,
-      lastReadTs: lastReadTsOf(me, convId),
-    });
+    items.push({ convId: groupConvId(g.id), convType: 'group', group: g });
+  }
+  // 一次批量读取元数据；最新消息由 (conv_id,id) 索引定位，不扫描消息历史。
+  const metadata = new Map(db.prepare(`
+    SELECT c.value AS cid, m.*, u.count AS unread, u.last_read_ts, s.pinned, s.muted
+    FROM json_each(?) c
+    LEFT JOIN messages m ON m.id = (SELECT id FROM messages WHERE conv_id = c.value ORDER BY id DESC LIMIT 1)
+    LEFT JOIN unread_counts u ON u.user_id = ? AND u.conv_id = c.value
+    LEFT JOIN conv_settings s ON s.user_id = ? AND s.conv_id = c.value
+  `).all(JSON.stringify(items.map(c => c.convId)), me, me).map(r => [r.cid, r]));
+  for (const item of items) {
+    const r = metadata.get(item.convId);
+    Object.assign(item, { unread: r.unread || 0, lastReadTs: r.last_read_ts || 0,
+      pinned: !!r.pinned, muted: !!r.muted,
+      lastMessage: r.id ? toMsgVO(r, me) : null, lastTime: r.created_at || 0 });
   }
 
   // 置顶优先，其次按最近消息时间
@@ -127,8 +108,8 @@ router.get('/:convId/messages', (req, res) => {
   if (!canAccessConv(req.user.id, convId)) {
     return res.status(403).json({ error: '无权访问该会话' });
   }
-  const before = Number(req.query.before) || Number.MAX_SAFE_INTEGER;
-  const limit = Math.min(Number(req.query.limit) || config.historyPageSize, 100);
+  const before = positiveInteger(req.query.before, Number.MAX_SAFE_INTEGER);
+  const limit = positiveInteger(req.query.limit, config.historyPageSize, 100);
   const rows = db.prepare('SELECT * FROM messages WHERE conv_id = ? AND id < ? ORDER BY id DESC LIMIT ?')
     .all(convId, before, limit);
   const messages = rows.map(m => toMsgVO(m, req.user.id)).reverse();
@@ -249,27 +230,35 @@ function convNameOf(m, uid) {
   return f ? f.nickname : '私聊';
 }
 
-/** 聊天记录搜索（服务端解密后检索 —— 此加密方案的核心能力之一） */
-router.get('/:convId/search', (req, res) => {
+/** 有界分批搜索，nextBefore 用于继续检索更早记录。 */
+router.get('/:convId/search', async (req, res, next) => {
   const convId = req.params.convId;
-  const q = (req.query.q || '').trim();
-  if (!q) return res.json({ results: [] });
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (!q) return res.json({ results: [], nextBefore: null });
+  if (q.length > 200) return res.status(400).json({ error: '搜索关键词最多 200 字' });
   if (!canAccessConv(req.user.id, convId)) {
     return res.status(403).json({ error: '无权访问该会话' });
   }
-  const rows = db.prepare('SELECT * FROM messages WHERE conv_id = ? AND revoked = 0 ORDER BY id ASC').all(convId);
-  const results = [];
-  for (const m of rows) {
-    if (m.kind !== 'text' && m.kind !== 'emoji') continue;
-    let content;
-    try { content = decryptMessageContent(m.content_enc); } catch (_) { continue; }
-    const text = content.text || '';
-    if (text.includes(q)) {
-      results.push(toMsgVO(m, req.user.id));
-      if (results.length >= 30) break;
+  try {
+    const page = await searchHistory({ userId: req.user.id, convId, q, before: req.query.before,
+      cancelled: () => res.destroyed });
+    if (!page || res.destroyed) return;
+    // 批次间成员关系或消息可能变动，返回前重验权限与撤回状态。
+    if (!canAccessConv(req.user.id, convId)) return res.status(403).json({ error: '无权访问该会话' });
+    const current = db.prepare('SELECT * FROM messages WHERE id = ? AND revoked = 0');
+    const results = [];
+    for (const { row } of page.matches) {
+      const m = current.get(row.id);
+      if (!m) continue;
+      const content = decryptMessageContent(m.content_enc);
+      if (typeof content.text === 'string' && content.text.includes(q)) results.push(toMsgVO(m, req.user.id, content));
     }
+    res.json({ results, nextBefore: page.nextBefore });
+  } catch (err) {
+    if (res.destroyed) return;
+    if (err.status === 429) return res.status(429).json({ error: err.message });
+    next(err);
   }
-  res.json({ results });
 });
 
 module.exports = router;

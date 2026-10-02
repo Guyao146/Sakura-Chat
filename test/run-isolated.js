@@ -40,11 +40,14 @@ async function run(script, env) {
     if (!ready) throw new Error('测试服务启动超时');
     await run('drafts.test.mjs', env);
     await run('media-lifecycle.test.mjs', env);
+    await run('client-performance.test.mjs', env);
+    await run('server-performance.test.mjs', env);
     await run('e2e.js', env);
     if (process.argv.includes('--browser')) {
       await run('browser-input-height.mjs', env);
       await run('browser-chat.mjs', env);
       await run('browser-media.mjs', env);
+      await run('browser-performance.mjs', env);
     }
   } catch (e) {
     console.error(log);

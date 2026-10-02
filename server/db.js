@@ -132,6 +132,15 @@ ensureColumn('group_members', 'display_name', 'TEXT NOT NULL DEFAULT \'\'');
 ensureColumn('unread_counts', 'last_read_ts', 'INTEGER NOT NULL DEFAULT 0');
 
 
+// 反向关系、用户群列表与未读更新也需要匹配索引，兼容已有数据库。
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_friendships_receiver ON friendships(friend_id, status, user_id);
+CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id, group_id);
+CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(conv_id, receiver_id) WHERE read_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_stickers_user ON user_stickers(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_saved_user ON saved_messages(user_id, id DESC);
+`);
+
 /* ------------------- 通用小工具 ------------------- */
 
 function now() { return Date.now(); }

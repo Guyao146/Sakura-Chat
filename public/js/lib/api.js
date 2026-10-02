@@ -6,8 +6,8 @@ let token = null;
 export function setToken(t) { token = t; }
 export function getToken() { return token; }
 
-export async function request(method, path, body) {
-  const opts = { method, headers: {} };
+export async function request(method, path, body, signal) {
+  const opts = { method, headers: {}, signal };
   if (token) opts.headers['Authorization'] = 'Bearer ' + token;
   if (body !== undefined && body !== null) {
     opts.headers['Content-Type'] = 'application/json';
@@ -56,7 +56,7 @@ export const api = {
   conversations: () => request('GET', '/conversations'),
   messages: (convId, before) => request('GET', `/conversations/${convId}/messages${before ? `?before=${before}` : ''}`),
   markRead: (convId) => request('POST', `/conversations/${convId}/read`),
-  searchHistory: (convId, q) => request('GET', `/conversations/${convId}/search?q=${encodeURIComponent(q)}`),
+  searchHistory: (convId, q, before, signal) => request('GET', `/conversations/${convId}/search?q=${encodeURIComponent(q)}${before ? `&before=${before}` : ''}`, undefined, signal),
   searchAll: (q) => request('GET', `/conversations/search/all?q=${encodeURIComponent(q)}`),
   convSettings: (convId, b) => request('PATCH', `/conversations/${convId}/settings`, b),
   // 群组扩展
