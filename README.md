@@ -88,6 +88,7 @@ Sakura-Chat/
 │   ├── system.js         # 系统账号「文件传输助手」：注册自动互加好友、拒绝登录/搜索/删除
 │   ├── messaging.js      # 系统消息写入
 │   ├── middleware.js     # 鉴权中间件
+│   ├── oauth.js          # 第三方登录（OIDC 客户端：SakuraID / Authentik，授权码 + PKCE）
 │   ├── ws.js             # WebSocket：收发/已读/输入/撤回/反应/编辑/拍一拍/心跳/重连
 │   ├── keygen.js         # 重新生成主密钥与 JWT 密钥（npm run keygen）
 │   └── api/              # REST 接口
@@ -116,6 +117,7 @@ Sakura-Chat/
 │   ├── media-lifecycle.test.mjs # 媒体资源回收单元测试（20 项，含 100 轮启停）
 │   ├── client-performance.test.mjs # 前端性能边界单元测试（请求合并、消息缓存淘汰）
 │   ├── server-performance.test.mjs # 服务端性能边界单元测试（分页/搜索/密钥/密码哈希/索引）
+│   ├── oauth.test.mjs            # 第三方登录回归（内嵌 Mock OIDC IdP，8 项）
 │   ├── browser-media.mjs       # 真实 Chrome 媒体回归（6 项：录音/取消/双端通话回收）
 │   ├── browser-performance.mjs # 真实 Chrome 性能回归（11 项：3000 条历史增量渲染/搜索分页）
 │   ├── browser-input-height.mjs # 真实 Chrome 鼠标事件的输入框布局回归（23 项）
@@ -148,6 +150,49 @@ Sakura-Chat/
 
 ---
 
+## 🪪 第三方登录（可选）
+
+登录页支持三种方式，按需开启，**不配置时只显示本地登录**：
+
+1. **本地账号**：始终可用（用户名 + 密码注册）。
+2. **Sakura**：接入同目录的 Sakura-Auth-Server（SakuraID，标准 OIDC 服务）。
+3. **Authentik**：接入任意 Authentik 实例（同样走标准 OIDC）。
+
+Sakura-Chat 作为标准 OIDC 客户端，使用**授权码 + PKCE（S256）**流程：浏览器打开
+`/api/auth/oauth/<提供方>/start` → 服务端生成 `state` 与 `code_verifier`（只存服务端）后跳转到 IdP →
+用户在 IdP 完成登录/同意 → 回调 `/api/auth/oauth/<提供方>/callback` 由服务端校验 `state`、换取令牌、
+拉取 `userinfo` → 签发一次性票据（HttpOnly Cookie）跳回前端 → 前端 `POST /api/auth/oauth/finish`
+换取本站 JWT + 会话密钥。`state` 与票据均一次性有效，重放即拒绝。
+
+### 配置
+
+在 `.env`（或部署环境变量）中按提供方开启，`OAUTH_<ID>_ISSUER` + `OAUTH_<ID>_CLIENT_ID` 两项齐全即启用：
+
+| 变量 | 说明 |
+| --- | --- |
+| `OAUTH_SAKURA_ISSUER` | SakuraID 地址，如 `https://sso.example.com` |
+| `OAUTH_SAKURA_CLIENT_ID` | SakuraID 管理端新建应用得到的 client_id |
+| `OAUTH_SAKURA_CLIENT_SECRET` | 留空 = 公开客户端（仅 PKCE，浏览器侧推荐）；填写 = 机密客户端（Basic 认证） |
+| `OAUTH_SAKURA_NAME` | 登录页按钮显示名（默认 `Sakura`） |
+| `OAUTH_AUTHENTIK_*` | 同上；Authentik 的 issuer 形如 `https://auth.example.com/application/o/sakura-chat` |
+| `APP_BASE_URL` | 反向代理后本站对外地址，用于纠正回调地址（如 `https://chat.example.com`） |
+
+**回调地址固定为** `https://<你的站点>/api/auth/oauth/<提供方>/callback`（提供方即 `sakura` / `authentik`），需在 IdP 侧登记。
+
+### 在 IdP 侧登记应用
+
+- **SakuraID**：管理后台「应用 → 新建应用」，`redirect_uri` 填上面的回调地址；可只勾选 `openid profile`，不填 client_secret 即公开客户端（PKCE）。
+- **Authentik**：新建 Provider 类型选 *OAuth2/OpenID Provider*，Client type 选 *Public*（PKCE）或 *Confidential*，Redirect URI 填回调地址；随后在 Application 中绑定并记下 Client ID。
+
+### 账号映射与安全说明
+
+- 外部身份 `(provider, sub)` 与本地账号一一对应：**首次登录自动创建影子账号**（本地密码为随机串，无法用密码登录本站），再次登录复用同一账号。
+- 影子账号用户名取自 `preferred_username`（规范化为本站 3-20 位规则），与已有用户名冲突时自动追加 `_2` / `_3` 后缀，**不与同名本地账号合并**——站方无法核实两个身份属于同一人。
+- 第三方登录得到的 JWT 与本地登录完全等价，WebSocket、消息加密、文件传输助手等逻辑一致。
+- 若 IdP 不可达或令牌校验失败，登录页会展示具体原因（`/login?oauth=error&msg=...`），不会把异常带给用户。
+
+---
+
 ## 🌐 REST API 概览
 
 所有接口以 `/api` 开头，除 `auth` 外均需 `Authorization: Bearer <token>`。
@@ -157,6 +202,8 @@ Sakura-Chat/
 | POST | `/api/auth/register` | 注册 `{username, password, nickname}` |
 | POST | `/api/auth/login` | 登录，返回 `token` + `sessionId` + `sessionKey` |
 | GET | `/api/auth/session` | 刷新会话密钥（页面刷新时调用，不长期保存密钥） |
+| GET | `/api/auth/providers` | 已启用的第三方登录清单（匿名，登录页渲染按钮） |
+| GET/POST | `/api/auth/oauth/<提供方>/start`、`/callback`、`finish` | 第三方登录：发起授权 / 授权码回调（换一次性票据 HttpOnly Cookie）/ 前端换本站会话 |
 | GET | `/api/auth/me` | 当前用户 |
 | GET | `/api/users/search?q=` | 搜索用户 |
 | PUT | `/api/users/profile` | 修改资料（昵称/签名/头像） |
@@ -193,7 +240,7 @@ HOST=http://127.0.0.1:3300 npm test
 
 > 也可使用 GitHub Actions：每次 push/PR 自动执行**语法检查 + 单元测试 + 62 项 E2E 回归 + Docker 镜像构建冒烟**，无需本地配置。
 
-本地还可用 `npm run test:isolated`（草稿/媒体生命周期/性能边界单元测试 + E2E，独立端口 + 临时数据库，不污染正式数据）或 `npm run test:browser`（附加真实 Chrome 回归：输入框布局 23 项、会话交互 17 项、媒体资源回收 6 项、性能边界 11 项）。单元测试可单独运行 `node --test test/*.test.mjs`；媒体浏览器测试使用合成音源与本地 WebRTC，无需摄像头/麦克风硬件。
+本地还可用 `npm run test:isolated`（草稿/媒体生命周期/性能边界/第三方登录单元测试 + E2E，独立端口 + 临时数据库，不污染正式数据）或 `npm run test:browser`（附加真实 Chrome 回归：输入框布局 23 项、会话交互 17 项、媒体资源回收 6 项、性能边界 11 项）。单元测试可单独运行 `node --test test/*.test.mjs`；媒体浏览器测试使用合成音源与本地 WebRTC，无需摄像头/麦克风硬件。
 
 测试覆盖：注册登录、JWT、会话密钥、好友请求/同意、**加密 WS 收发**、ACK、已读回执、输入提示、撤回、群聊广播、**表情包与语音消息收发**、**通话信令中继（邀请/应答/ICE/拒绝/挂断、非好友拦截、离线回执、通话记录）**、**引用回复 / 表情反应 / 消息编辑 / 拍一拍（含"他人消息不可编辑"权限）**、**置顶 + 免打扰（支持单独修改互不覆盖）、全局搜索、收藏/取消收藏、隐身状态广播**、**会话边界与明文拒绝（无效会话密钥关闭连接、明文业务消息不入库、不能使用其它会话密钥绕过连接绑定、消息编号冲突检测）**、**好友拒绝后可重新申请**、服务端聊天记录搜索，**文件传输助手（注册默认好友、拒绝登录、不可搜索/添加/删除、消息自动送达+已读）**，以及**断言数据库中不存在明文聊天记录**（共 **62** 项）。
 

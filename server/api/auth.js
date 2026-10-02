@@ -7,6 +7,7 @@ const { genId, genSessionKey, makeSalt, hashPasswordAsync, verifyPassword } = re
 const { db, getUserByUsername, getUserById, safeUser } = require('../db');
 const { ensureFriendWithSystem, isSystemUsername } = require('../system');
 const state = require('../state');
+const oauth = require('../oauth');
 
 const router = express.Router();
 const asyncRoute = fn => (req, res, next) => Promise.resolve(fn(req, res)).catch(err => {
@@ -80,6 +81,50 @@ router.get('/session', auth, asyncRoute(async (req, res) => {
 router.get('/me', auth, (req, res) => {
   res.json({ user: req.user });
 });
+
+// 第三方登录（可选）：已配置的 OIDC 提供方清单，供登录页渲染按钮
+router.get('/providers', (req, res) => {
+  res.json({ providers: oauth.listProviders() });
+});
+
+// 第三方登录：发起授权（302 到身份提供方）。state 与 PKCE verifier 仅存服务端。
+router.get('/oauth/:provider/start', asyncRoute(async (req, res) => {
+  const provider = oauth.getProvider(req.params.provider);
+  if (!provider) return res.status(404).json({ error: '未配置该登录方式' });
+  const url = await oauth.startAuthorize(provider, oauth.requestBase(req));
+  res.redirect(url);
+}));
+
+// 第三方登录：授权码回调 → 校验 state → 换令牌 → 查找/创建账号 → 签发一次性票据
+router.get('/oauth/:provider/callback', asyncRoute(async (req, res) => {
+  const provider = oauth.getProvider(req.params.provider);
+  const fail = msg => res.redirect('/login?oauth=error&msg=' + encodeURIComponent(msg || '第三方登录失败'));
+  if (!provider) return fail('未配置该登录方式');
+  try {
+    const identity = await oauth.finishAuthorize(provider, req.query);
+    const u = oauth.resolveUser(identity);
+    const sess = issueSession(u.id);
+    const ticket = oauth.issueTicket({
+      token: token.sign({ uid: u.id, username: u.username }),
+      user: safeUser(u),
+      sessionId: sess.sessionId,
+      sessionKey: sess.sessionKey,
+    });
+    oauth.setTicketCookie(res, ticket);
+    return res.redirect('/login?oauth=callback');
+  } catch (err) {
+    console.error('[oauth] 第三方登录回调失败：', err.message);
+    return fail(err.message);
+  }
+}));
+
+// 第三方登录：前端用票据 Cookie 换取本站 JWT + 会话密钥
+router.post('/oauth/finish', asyncRoute(async (req, res) => {
+  const payload = oauth.consumeTicket(oauth.readTicketCookie(req));
+  if (!payload) return res.status(401).json({ error: '第三方登录票据不存在或已过期，请重新登录' });
+  oauth.clearTicketCookie(res);
+  res.json(payload);
+}));
 
 module.exports = router;
 module.exports.issueSession = issueSession;

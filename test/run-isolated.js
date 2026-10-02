@@ -42,6 +42,7 @@ async function run(script, env) {
     await run('media-lifecycle.test.mjs', env);
     await run('client-performance.test.mjs', env);
     await run('server-performance.test.mjs', env);
+    await run('oauth.test.mjs', env);   // 自带 Mock IdP 与独立实例，不依赖上面的端口
     await run('e2e.js', env);
     if (process.argv.includes('--browser')) {
       await run('browser-input-height.mjs', env);

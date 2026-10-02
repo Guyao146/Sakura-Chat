@@ -24,6 +24,42 @@ const DATA_DIR = process.env.SAKURA_DATA_DIR
   ? path.resolve(process.env.SAKURA_DATA_DIR) : path.join(ROOT, 'server', 'data');
 const UPLOADS_DIR = path.join(ROOT, 'public', 'uploads');
 
+const DEFAULT_OAUTH_PROVIDER_NAMES = { sakura: 'Sakura', authentik: 'Authentik' };
+
+/**
+ * 解析第三方登录提供方（标准 OAuth2/OIDC）。
+ *
+ * 约定：OAUTH_<ID>_ISSUER + OAUTH_<ID>_CLIENT_ID 定义一个提供方，二者缺一即忽略。
+ * ID 只允许 [a-z0-9-]（同时作为 URL 路由段），如 OAUTH_SAKURA_* / OAUTH_AUTHENTIK_*。
+ * CLIENT_SECRET 留空时视为公开客户端，强制走 PKCE（浏览器侧 SPA 的推荐做法）。
+ */
+function parseOAuthProviders() {
+  const ids = new Set();
+  for (const key of Object.keys(process.env)) {
+    const m = /^OAUTH_([A-Z0-9][A-Z0-9]{0,30})_ISSUER$/.exec(key);
+    if (m) ids.add(m[1]);
+  }
+  const providers = [];
+  for (const idRaw of [...ids].sort()) {
+    const prefix = 'OAUTH_' + idRaw + '_';
+    const issuer = (process.env[prefix + 'ISSUER'] || '').trim().replace(/\/+$/, '');
+    const clientId = (process.env[prefix + 'CLIENT_ID'] || '').trim();
+    const id = idRaw.toLowerCase();
+    if (!issuer || !clientId) continue;                 // 配置不完整：该提供方隐藏
+    if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(id)) continue;
+    if (!/^https?:\/\/[\w.:%-]+(:\d+)?(\/\S*)?$/i.test(issuer)) continue;
+    let scopes = (process.env[prefix + 'SCOPES'] || 'openid profile').trim();
+    if (!scopes.split(/\s+/).includes('openid')) scopes = 'openid ' + scopes;
+    const name = (process.env[prefix + 'NAME'] || '').trim() || DEFAULT_OAUTH_PROVIDER_NAMES[id] || idRaw;
+    providers.push({
+      id, name, issuer, clientId,
+      clientSecret: (process.env[prefix + 'CLIENT_SECRET'] || '').trim(),
+      scopes,
+    });
+  }
+  return providers;
+}
+
 const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   jwtSecret: process.env.JWT_SECRET || 'sakura-chat-dev-secret-please-change',
@@ -39,6 +75,9 @@ const config = {
   maxMessageBytes: 16 * 1024,          // 单条消息明文上限
   uploadMaxBytes: 10 * 1024 * 1024,    // 图片/文件上传上限：10MB
   historyPageSize: 30,
+  oauthProviders: parseOAuthProviders(),
+  // 反向代理后，浏览器地址与本机 Host 不一致时，以此覆盖回调地址的协议与主机名
+  oauthRedirectBase: (process.env.APP_BASE_URL || '').trim().replace(/\/+$/, ''),
 };
 
 function ensureDirs() {

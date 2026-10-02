@@ -32,6 +32,8 @@ export const api = {
   // 账号
   register: (b) => request('POST', '/auth/register', b),
   login: (b) => request('POST', '/auth/login', b),
+  providers: () => request('GET', '/auth/providers'),                     // 已启用的第三方登录
+  oauthFinish: () => request('POST', '/auth/oauth/finish'),               // 票据 Cookie → 本站会话
   session: () => request('GET', '/auth/session'),
   me: () => request('GET', '/auth/me'),
   // 用户

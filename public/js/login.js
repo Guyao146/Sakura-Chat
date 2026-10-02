@@ -57,4 +57,54 @@ export function initLogin(onSuccess) {
     $('#reg-password').value = '';
     switchTab('login');
   });
+
+  loadProviders();
+  handleOAuthCallback(onSuccess);
+}
+
+/** 拉取已配置的第三方登录提供方并渲染按钮（未配置时整块隐藏） */
+async function loadProviders() {
+  try {
+    const { providers = [] } = await api.providers();
+    if (!providers.length) return;
+    const btns = $('#oauth-btns');
+    btns.textContent = '';
+    for (const p of providers) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'oauth-btn';
+      btn.textContent = p.name;
+      btn.addEventListener('click', () => {
+        btn.disabled = true;
+        btn.textContent = '正在跳转...';
+        location.href = '/api/auth/oauth/' + encodeURIComponent(p.id) + '/start';
+      });
+      btns.appendChild(btn);
+    }
+    $('#login-oauth').hidden = false;
+  } catch (_) { /* 接口不可用时静默：仅保留本地登录 */ }
+}
+
+/** 第三方登录回调：?oauth=callback 用票据换会话；?oauth=error 展示失败原因 */
+async function handleOAuthCallback(onSuccess) {
+  const params = new URLSearchParams(location.search);
+  const mode = params.get('oauth');
+  if (!mode) return;
+  const errEl = $('#login-error');
+  const cleanUrl = () => history.replaceState(null, '', location.pathname);
+  if (mode === 'callback') {
+    errEl.textContent = '第三方登录中...';
+    try {
+      const data = await api.oauthFinish();
+      cleanUrl();
+      toast('登录成功');
+      onSuccess(data);
+    } catch (err) {
+      cleanUrl();
+      errEl.textContent = err.message || '第三方登录失败，请重试';
+    }
+  } else if (mode === 'error') {
+    cleanUrl();
+    errEl.textContent = params.get('msg') || '第三方登录失败，请重试';
+  }
 }

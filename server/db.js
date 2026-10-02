@@ -127,6 +127,9 @@ ensureColumn('messages', 'forward_from','TEXT');                    // 转发来
 ensureColumn('messages', 'ats',         'TEXT');                    // JSON: [被@的 uid]
 // 用户扩展：自定义在线状态（Discord 式）
 ensureColumn('users', 'status', 'TEXT NOT NULL DEFAULT \'\'');
+// 第三方登录（OIDC）：外部身份提供方与本地账号的映射；两者皆空 = 纯本地账号
+ensureColumn('users', 'auth_provider', 'TEXT NOT NULL DEFAULT \'\'');
+ensureColumn('users', 'auth_sub', 'TEXT NOT NULL DEFAULT \'\'');
 // 群扩展：群公告已有 announcement 字段；群昵称（群内显示名）
 ensureColumn('group_members', 'display_name', 'TEXT NOT NULL DEFAULT \'\'');
 ensureColumn('unread_counts', 'last_read_ts', 'INTEGER NOT NULL DEFAULT 0');
@@ -139,6 +142,8 @@ CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id, grou
 CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(conv_id, receiver_id) WHERE read_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_stickers_user ON user_stickers(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_saved_user ON saved_messages(user_id, id DESC);
+-- 同一外部身份只能映射到一个本地账号（部分索引：本地账号不占用）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_external ON users(auth_provider, auth_sub) WHERE auth_provider != '';
 `);
 
 /* ------------------- 通用小工具 ------------------- */
