@@ -247,7 +247,7 @@ HOST=http://127.0.0.1:3300 npm test
 
 > 也可使用 GitHub Actions：每次 push/PR 自动执行**语法检查 + 单元测试 + 62 项 E2E 回归 + Docker 镜像构建冒烟**，无需本地配置。
 
-本地还可用 `npm run test:isolated`（草稿/媒体生命周期/性能边界/第三方登录单元测试 + 登录注册限流回归 + E2E，独立端口 + 临时数据库，不污染正式数据）或 `npm run test:browser`（附加真实 Chrome 回归：登录页 12 项、输入框布局 23 项、会话交互 17 项、媒体资源回收 6 项、性能边界 11 项）。单元测试可单独运行 `node --test test/*.test.mjs`；媒体浏览器测试使用合成音源与本地 WebRTC，无需摄像头/麦克风硬件。
+本地还可用 `npm run test:isolated`（草稿/媒体生命周期/性能边界/第三方登录单元测试 + 登录注册限流回归 + 上传安全回归 + E2E，独立端口 + 临时数据库，不污染正式数据）或 `npm run test:browser`（附加真实 Chrome 回归：登录页 12 项、输入框布局 23 项、会话交互 17 项、媒体资源回收 6 项、性能边界 11 项）。单元测试可单独运行 `node --test test/*.test.mjs`；媒体浏览器测试使用合成音源与本地 WebRTC，无需摄像头/麦克风硬件。
 
 若同盘同级目录存在 [Sakura-Auth-Server](../Sakura-Auth-Server)（SakuraID），`test:isolated` 还会自动跑**真实联调**（`tools/oauth-sakuraid-smoke.mjs`）：播种临时 IdP 数据 → 启动真实 SakuraID 与接入它的 Sakura-Chat → 走完整授权码 + PKCE 流程并断言影子账号创建与复用（16 项）。目录不存在时自动跳过，CI 环境安全。
 

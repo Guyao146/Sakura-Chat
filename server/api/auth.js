@@ -133,7 +133,7 @@ router.get('/oauth/:provider/callback', asyncRoute(async (req, res) => {
       oauth.setTicketCookie(res, ticket);
       return res.redirect('/?oauth=link');
     }
-    const u = oauth.resolveUser(identity);
+    const u = await oauth.resolveUser(identity);
     const sess = issueSession(u.id);
     const ticket = oauth.issueTicket({
       token: token.sign({ uid: u.id, username: u.username }),

@@ -25,7 +25,7 @@ const crypto = require('node:crypto');
 const config = require('./config');
 const { db, getUserByUsername, getUserById } = require('./db');
 const { ensureFriendWithSystem, isSystemUsername } = require('./system');
-const { makeSalt, hashPassword } = require('./crypto');
+const { makeSalt, hashPasswordAsync } = require('./crypto');
 
 const STATE_TTL_MS = 10 * 60 * 1000;     // 发起授权后允许的回调间隔
 const TICKET_TTL_MS = 2 * 60 * 1000;     // 回调后换票窗口
@@ -203,14 +203,14 @@ function pickUsername(raw) {
  * 用密码登录本站），之后按 (provider, sub) 复用同一账号。不与同名本地账号自动
  * 合并——站方无法核实两个身份属于同一人，合并需用户主动完成。
  */
-function resolveUser(identity) {
+async function resolveUser(identity) {
   let u = db.prepare('SELECT * FROM users WHERE auth_provider = ? AND auth_sub = ?')
     .get(identity.providerId, identity.sub);
   if (!u) {
     const username = pickUsername(identity.username);
     const nickname = (identity.nickname && identity.nickname.trim()) || username;
     const salt = makeSalt();
-    const hash = hashPassword(crypto.randomBytes(32).toString('hex'), salt);
+    const hash = await hashPasswordAsync(crypto.randomBytes(32).toString('hex'), salt);
     const now = Date.now();
     const info = db.prepare(
       'INSERT INTO users (username, nickname, password_hash, salt, created_at, last_seen, auth_provider, auth_sub, shadow)' +

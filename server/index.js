@@ -23,6 +23,20 @@ const app = express();
 app.use(express.json({ limit: '12mb' }));
 app.use(express.urlencoded({ extended: true, limit: '12mb' }));
 
+// 安全头：禁止内容类型嗅探（上传的文本文件不应被浏览器当成 HTML 执行）
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
+
+// 上传目录保护：SVG 可内嵌 <script>，顶层导航到 /uploads/x.svg 会同源执行脚本
+// （可读 localStorage 窃取登录令牌）；强制附件下载后浏览器不再渲染执行。
+// <img> 标签加载 SVG 不执行脚本，头像与图片消息不受影响。
+app.use('/uploads', (req, res, next) => {
+  if (/\.svg$/i.test(req.path)) res.setHeader('Content-Disposition', 'attachment');
+  next();
+});
+
 // 前端静态资源
 app.use(express.static(path.join(config.root, 'public')));
 
