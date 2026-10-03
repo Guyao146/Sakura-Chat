@@ -118,12 +118,15 @@ Sakura-Chat/
 │   ├── client-performance.test.mjs # 前端性能边界单元测试（请求合并、消息缓存淘汰）
 │   ├── server-performance.test.mjs # 服务端性能边界单元测试（分页/搜索/密钥/密码哈希/索引）
 │   ├── oauth.test.mjs            # 第三方登录回归（内嵌 Mock OIDC IdP，8 项）
+│   ├── browser-login.mjs       # 真实 Chrome 登录页回归（12 项：表单/OAuth 区块显隐/回调错误/资料徽章）
 │   ├── browser-media.mjs       # 真实 Chrome 媒体回归（6 项：录音/取消/双端通话回收）
 │   ├── browser-performance.mjs # 真实 Chrome 性能回归（11 项：3000 条历史增量渲染/搜索分页）
 │   ├── browser-input-height.mjs # 真实 Chrome 鼠标事件的输入框布局回归（23 项）
 │   ├── browser-chat.mjs        # 真实 Chrome 鼠标事件的会话回归（17 项：竞态/草稿/注入/历史操作）
 │   └── browser-helper.mjs      # CDP 浏览器驱动封装
-
+├── tools/
+│   ├── gen-stickers.js           # 表情包资源生成
+│   └── oauth-sakuraid-smoke.mjs  # 与真实 Sakura-Auth-Server 的 OIDC 全流程联调（同级目录不存在时自动跳过）
 ```
 ## 🔐 加密架构（三层）
 
@@ -240,7 +243,9 @@ HOST=http://127.0.0.1:3300 npm test
 
 > 也可使用 GitHub Actions：每次 push/PR 自动执行**语法检查 + 单元测试 + 62 项 E2E 回归 + Docker 镜像构建冒烟**，无需本地配置。
 
-本地还可用 `npm run test:isolated`（草稿/媒体生命周期/性能边界/第三方登录单元测试 + E2E，独立端口 + 临时数据库，不污染正式数据）或 `npm run test:browser`（附加真实 Chrome 回归：输入框布局 23 项、会话交互 17 项、媒体资源回收 6 项、性能边界 11 项）。单元测试可单独运行 `node --test test/*.test.mjs`；媒体浏览器测试使用合成音源与本地 WebRTC，无需摄像头/麦克风硬件。
+本地还可用 `npm run test:isolated`（草稿/媒体生命周期/性能边界/第三方登录单元测试 + E2E，独立端口 + 临时数据库，不污染正式数据）或 `npm run test:browser`（附加真实 Chrome 回归：登录页 12 项、输入框布局 23 项、会话交互 17 项、媒体资源回收 6 项、性能边界 11 项）。单元测试可单独运行 `node --test test/*.test.mjs`；媒体浏览器测试使用合成音源与本地 WebRTC，无需摄像头/麦克风硬件。
+
+若同盘同级目录存在 [Sakura-Auth-Server](../Sakura-Auth-Server)（SakuraID），`test:isolated` 还会自动跑**真实联调**（`tools/oauth-sakuraid-smoke.mjs`）：播种临时 IdP 数据 → 启动真实 SakuraID 与接入它的 Sakura-Chat → 走完整授权码 + PKCE 流程并断言影子账号创建与复用（16 项）。目录不存在时自动跳过，CI 环境安全。
 
 测试覆盖：注册登录、JWT、会话密钥、好友请求/同意、**加密 WS 收发**、ACK、已读回执、输入提示、撤回、群聊广播、**表情包与语音消息收发**、**通话信令中继（邀请/应答/ICE/拒绝/挂断、非好友拦截、离线回执、通话记录）**、**引用回复 / 表情反应 / 消息编辑 / 拍一拍（含"他人消息不可编辑"权限）**、**置顶 + 免打扰（支持单独修改互不覆盖）、全局搜索、收藏/取消收藏、隐身状态广播**、**会话边界与明文拒绝（无效会话密钥关闭连接、明文业务消息不入库、不能使用其它会话密钥绕过连接绑定、消息编号冲突检测）**、**好友拒绝后可重新申请**、服务端聊天记录搜索，**文件传输助手（注册默认好友、拒绝登录、不可搜索/添加/删除、消息自动送达+已读）**，以及**断言数据库中不存在明文聊天记录**（共 **62** 项）。
 

@@ -175,6 +175,7 @@ function safeUser(u) {
     id: u.id, username: u.username, nickname: u.nickname,
     avatar: u.avatar || '', signature: u.signature || '',
     createdAt: u.created_at, lastSeen: u.last_seen || 0,
+    authProvider: u.auth_provider || '',   // 登录方式：'' 本地 / 'sakura' / 'authentik' …
   };
 }
 

@@ -43,8 +43,11 @@ async function run(script, env) {
     await run('client-performance.test.mjs', env);
     await run('server-performance.test.mjs', env);
     await run('oauth.test.mjs', env);   // 自带 Mock IdP 与独立实例，不依赖上面的端口
+    // 与真实 Sakura-Auth-Server 联调（同级目录不存在时自动跳过，CI 安全）
+    await run('../tools/oauth-sakuraid-smoke.mjs', env);
     await run('e2e.js', env);
     if (process.argv.includes('--browser')) {
+      await run('browser-login.mjs', env);
       await run('browser-input-height.mjs', env);
       await run('browser-chat.mjs', env);
       await run('browser-media.mjs', env);

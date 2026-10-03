@@ -49,6 +49,9 @@ const MSG_LIST_MIN = 120;                    // 消息列表最小保留高度�
 const INPUT_MIN = 40;                        // 输入框最小/默认高度（单行）
 let inputBaseH = INPUT_MIN;                  // 输入框基准高度：默认单行，用户可向上拖大
 
+// 第三方登录方式徽章：后端 authProvider（'' 本地 / 'sakura' / 'authentik'…）→ 展示名
+const AUTH_PROVIDER_LABELS = { sakura: 'Sakura', authentik: 'Authentik' };
+
 export async function initApp({ token, user, sessionId, sessionKey }) {
   state.me = user;
   let storage;
@@ -2009,6 +2012,7 @@ function openProfileModal() {
       </div>
       <input class="modal-input" id="profile-nickname" value="${escapeHtml(me.nickname)}" placeholder="昵称">
       <input class="modal-input" id="profile-signature" value="${escapeHtml(me.signature || '')}" placeholder="个性签名">
+      ${me.authProvider ? `<div class="profile-auth-method">登录方式:${escapeHtml(AUTH_PROVIDER_LABELS[me.authProvider] || me.authProvider)}</div>` : ''}
       <div class="modal-btn-row">
         <button class="modal-btn ghost" data-act="close">取消</button>
         <button class="modal-btn" id="btn-save-profile">保存</button>

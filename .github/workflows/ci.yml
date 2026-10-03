@@ -24,7 +24,7 @@ jobs:
       - name: 语法检查（服务端 + 测试，CommonJS）
         run: |
           set -e
-          for f in server/*.js server/api/*.js test/e2e.js tools/*.js; do
+          for f in server/*.js server/api/*.js test/e2e.js tools/*.js tools/*.mjs; do
             node --check "$f"
           done
           echo "server/test syntax ok"
