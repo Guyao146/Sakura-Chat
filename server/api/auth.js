@@ -82,26 +82,45 @@ router.get('/me', auth, (req, res) => {
   res.json({ user: req.user });
 });
 
+/** 从 Authorization 头手动解析已登录用户（finish 路由按票据模式按需鉴权，不强制全部请求登录） */
+function bearerUser(req) {
+  const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
+  if (!m) return null;
+  const payload = token.verify(m[1].trim());
+  if (!payload || !payload.uid) return null;
+  return getUserById(payload.uid);
+}
+
 // 第三方登录（可选）：已配置的 OIDC 提供方清单，供登录页渲染按钮
 router.get('/providers', (req, res) => {
   res.json({ providers: oauth.listProviders() });
 });
 
 // 第三方登录：发起授权（302 到身份提供方）。state 与 PKCE verifier 仅存服务端。
+//   ?link=1 为「绑定已有账号」模式：无需在跳转时鉴权，绑定动作在 finish 时凭票据+登录态完成
 router.get('/oauth/:provider/start', asyncRoute(async (req, res) => {
   const provider = oauth.getProvider(req.params.provider);
   if (!provider) return res.status(404).json({ error: '未配置该登录方式' });
-  const url = await oauth.startAuthorize(provider, oauth.requestBase(req));
+  const url = await oauth.startAuthorize(provider, oauth.requestBase(req), {
+    mode: req.query.link === '1' ? 'link' : 'login',
+  });
   res.redirect(url);
 }));
 
-// 第三方登录：授权码回调 → 校验 state → 换令牌 → 查找/创建账号 → 签发一次性票据
+// 第三方登录：授权码回调 → 校验 state → 换令牌
+//   登录模式：查找/创建账号 → 签发一次性票据 → 302 回 /login?oauth=callback
+//   绑定模式：签发携带外部身份的一次性票据 → 302 回 /?oauth=link（由已登录的前端消费）
 router.get('/oauth/:provider/callback', asyncRoute(async (req, res) => {
   const provider = oauth.getProvider(req.params.provider);
   const fail = msg => res.redirect('/login?oauth=error&msg=' + encodeURIComponent(msg || '第三方登录失败'));
   if (!provider) return fail('未配置该登录方式');
   try {
-    const identity = await oauth.finishAuthorize(provider, req.query);
+    const { identity, mode } = await oauth.finishAuthorize(provider, req.query);
+    if (mode === 'link') {
+      const ticket = oauth.issueTicket({ mode: 'link', identity });
+      oauth.setTicketCookie(res, ticket);
+      return res.redirect('/?oauth=link');
+    }
     const u = oauth.resolveUser(identity);
     const sess = issueSession(u.id);
     const ticket = oauth.issueTicket({
@@ -118,12 +137,28 @@ router.get('/oauth/:provider/callback', asyncRoute(async (req, res) => {
   }
 }));
 
-// 第三方登录：前端用票据 Cookie 换取本站 JWT + 会话密钥
+// 第三方登录/绑定：前端用票据 Cookie 完成流程
+//   登录票据：换取本站 JWT + 会话密钥
+//   绑定票据（mode=link）：要求有效的登录态，把外部身份绑定到当前账号
 router.post('/oauth/finish', asyncRoute(async (req, res) => {
   const payload = oauth.consumeTicket(oauth.readTicketCookie(req));
   if (!payload) return res.status(401).json({ error: '第三方登录票据不存在或已过期，请重新登录' });
   oauth.clearTicketCookie(res);
+  if (payload.mode === 'link') {
+    const user = bearerUser(req);
+    if (!user) return res.status(401).json({ error: '登录已过期，请重新登录后再绑定' });
+    const result = oauth.linkIdentity(user.id, payload.identity);
+    if (result.error) return res.status(409).json({ error: result.error });
+    return res.json({ ok: true, user: safeUser(result.user) });
+  }
   res.json(payload);
+}));
+
+// 解除当前账号的第三方身份绑定（影子账号禁止解绑，见 unlinkProvider）
+router.post('/unlink', auth, asyncRoute(async (req, res) => {
+  const result = oauth.unlinkProvider(req.user.id);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json({ ok: true, user: safeUser(result.user) });
 }));
 
 module.exports = router;

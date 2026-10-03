@@ -106,6 +106,7 @@ async function seedIdp(dataDir, { issuer, redirectUri, username, password, name 
   keysMod.initKeys();                                 // 生成 RS256 签名密钥
 
   usersMod.create({ username, passwordHash: passwordMod.hashPassword(password), name });
+  usersMod.create({ username: 'sso_bob', passwordHash: passwordMod.hashPassword(password), name: '联调鲍勃' });
   const client = clientsMod.create({
     name: 'Sakura Chat 联调',
     redirectUris: [redirectUri],
@@ -180,26 +181,31 @@ async function main() {
     }
 
     // 3. 完整授权流程（start → authorize → callback → finish）
-    const runFlow = async () => {
-      const start = await request(chat + '/api/auth/oauth/sakura/start');
+    const runFlow = async ({ link = false, finishBearer = null, idpSession = idpJar } = {}) => {
+      const start = await request(chat + '/api/auth/oauth/sakura/start' + (link ? '?link=1' : ''));
       check('start 重定向到 IdP authorize', start.status === 302 && start.headers.location.startsWith(idp + '/authorize'));
       const au = new URL(start.headers.location);
       check('授权请求携带 PKCE S256 且不含 verifier',
         au.searchParams.get('code_challenge_method') === 'S256' && !au.searchParams.has('code_verifier'));
 
-      const authorize = await request(start.headers.location, { headers: { cookie: idpJar.header() } });
+      const authorize = await request(start.headers.location, { headers: { cookie: idpSession.header() } });
       check('IdP 直接签发授权码（已禁用同意页）',
         authorize.status === 302 && authorize.headers.location.startsWith(chat + '/api/auth/oauth/sakura/callback'));
 
       const chatJar = new Jar();
       const cb = await request(authorize.headers.location);
       chatJar.capture(cb);
-      check('回调签发票据并跳回登录页',
-        cb.status === 302 && cb.headers.location.includes('oauth=callback') && !!chatJar.map.get('sc_oauth_ticket'));
+      if (link) {
+        check('绑定回调跳回应用页并签发票据',
+          cb.status === 302 && cb.headers.location.includes('oauth=link') && !!chatJar.map.get('sc_oauth_ticket'));
+      } else {
+        check('回调签发票据并跳回登录页',
+          cb.status === 302 && cb.headers.location.includes('oauth=callback') && !!chatJar.map.get('sc_oauth_ticket'));
+      }
 
-      const fin = await request(chat + '/api/auth/oauth/finish', {
-        method: 'POST', headers: { cookie: chatJar.header(), 'Content-Length': '0' },
-      });
+      const headers = { cookie: chatJar.header(), 'Content-Length': '0' };
+      if (finishBearer) headers.authorization = 'Bearer ' + finishBearer;
+      const fin = await request(chat + '/api/auth/oauth/finish', { method: 'POST', headers });
       return { status: fin.status, data: fin.body ? JSON.parse(fin.body) : null };
     };
 
@@ -208,6 +214,7 @@ async function main() {
       !!(first.data.token && first.data.sessionId && first.data.sessionKey));
     check('影子账号用户名取自 preferred_username', first.data.user.username === 'sso_alice');
     check('昵称取自 IdP name claim', first.data.user.nickname === '联调爱丽丝');
+    check('影子账号带 shadow 标记', first.data.user.shadow === true);
 
     {
       const me = await request(chat + '/api/auth/me', { headers: { authorization: 'Bearer ' + first.data.token } });
@@ -217,6 +224,41 @@ async function main() {
     // 4. 再次登录复用同一账号
     const second = await runFlow();
     check('同一外部身份复用同一账号', second.status === 200 && second.data.user.id === first.data.user.id);
+
+    // 5. 本地账号绑定真实外部身份（用另一个 IdP 用户，避免与已建影子账号冲突）
+    {
+      const bobJar = new Jar();
+      const idpLogin = await request(idp + '/api/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'sso_bob', password: 'alice-pass-123' }),
+      });
+      bobJar.capture(idpLogin);
+      check('登录第二个 SakuraID 用户（绑定用）', idpLogin.status === 200 && !!bobJar.map.get('sid'));
+
+      await request(chat + '/api/auth/register', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'local_bob', password: 'pass1234' }),
+      });
+      const login = await request(chat + '/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'local_bob', password: 'pass1234' }),
+      });
+      const bob = JSON.parse(login.body);
+      check('本地账号注册并登录', login.status === 200 && !!bob.token);
+
+      const noToken = await runFlow({ link: true, idpSession: bobJar });
+      check('绑定票据要求登录态（无 token 时拒绝）', noToken.status === 401);
+
+      const linkRes = await runFlow({ link: true, finishBearer: bob.token, idpSession: bobJar });
+      check('本地账号绑定真实 SakuraID 身份',
+        linkRes.status === 200 && linkRes.data.user.id === bob.user.id &&
+        linkRes.data.user.authProvider === 'sakura' && linkRes.data.user.shadow === false);
+
+      // 绑定后：用该外部身份直接登录应复用本地账号（用户名保持本地注册值）
+      const reuse = await runFlow({ idpSession: bobJar });
+      check('绑定后的外部身份登录复用本地账号', reuse.status === 200 && reuse.data.user.id === bob.user.id &&
+        reuse.data.user.username === 'local_bob');
+    }
 
     // 5. 数据库层面断言（只读打开，聊天服务仍在线）
     {

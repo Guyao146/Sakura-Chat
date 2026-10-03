@@ -130,6 +130,8 @@ ensureColumn('users', 'status', 'TEXT NOT NULL DEFAULT \'\'');
 // 第三方登录（OIDC）：外部身份提供方与本地账号的映射；两者皆空 = 纯本地账号
 ensureColumn('users', 'auth_provider', 'TEXT NOT NULL DEFAULT \'\'');
 ensureColumn('users', 'auth_sub', 'TEXT NOT NULL DEFAULT \'\'');
+// shadow=1：第三方登录自动创建的影子账号（本地密码为随机串，无法密码登录）
+ensureColumn('users', 'shadow', 'INTEGER NOT NULL DEFAULT 0');
 // 群扩展：群公告已有 announcement 字段；群昵称（群内显示名）
 ensureColumn('group_members', 'display_name', 'TEXT NOT NULL DEFAULT \'\'');
 ensureColumn('unread_counts', 'last_read_ts', 'INTEGER NOT NULL DEFAULT 0');
@@ -151,7 +153,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_external ON users(auth_provider
 function now() { return Date.now(); }
 
 function getUserById(id) {
-  return db.prepare('SELECT id, username, nickname, avatar, signature, created_at, last_seen FROM users WHERE id = ?').get(id);
+  return db.prepare('SELECT id, username, nickname, avatar, signature, created_at, last_seen,' +
+    ' auth_provider, auth_sub, shadow FROM users WHERE id = ?').get(id);
 }
 
 function getUserByUsername(username) {
@@ -176,6 +179,7 @@ function safeUser(u) {
     avatar: u.avatar || '', signature: u.signature || '',
     createdAt: u.created_at, lastSeen: u.last_seen || 0,
     authProvider: u.auth_provider || '',   // 登录方式：'' 本地 / 'sakura' / 'authentik' …
+    shadow: !!u.shadow,                    // 影子账号：仅第三方登录，不可解绑
   };
 }
 

@@ -12,7 +12,10 @@
  *     → 校验 state（一次性）→ PKCE verifier 换 access_token → 拉 userinfo
  *     → 按 (provider, sub) 查找/创建本地账号 → 签发一次性票据（HttpOnly Cookie）
  *     → 302 回 /login?oauth=callback
+ *   浏览器 GET /api/auth/oauth/sakura/start?link=1（绑定模式，已登录用户从资料页发起）
+ *     → 同一授权流程，回调签发携带外部身份的票据，跳回 /?oauth=link
  *   浏览器 POST /api/auth/oauth/finish（携带票据 Cookie）→ 换取本站 JWT + 会话密钥
+ *     （绑定票据要求同时携带有效的登录态，把外部身份并入当前账号）
  *
  * state 与 verifier 全程不落盘、不经过浏览器，票据单次有效；未配置 OAUTH_* 时
  * 提供方列表为空，登录页只显示本地登录。
@@ -84,8 +87,8 @@ function callbackPath(providerId) {
   return '/api/auth/oauth/' + providerId + '/callback';
 }
 
-/** 生成授权 URL，state/verifier 存服务端（一次性） */
-async function startAuthorize(provider, redirectBase) {
+/** 生成授权 URL，state/verifier 存服务端（一次性）。mode: 'login' 登录 / 'link' 绑定已有账号 */
+async function startAuthorize(provider, redirectBase, { mode = 'login' } = {}) {
   const doc = await discover(provider);
   const state = rand(32);
   const codeVerifier = rand(48);
@@ -95,6 +98,7 @@ async function startAuthorize(provider, redirectBase) {
     providerId: provider.id,
     codeVerifier,
     redirectUri,
+    mode: mode === 'link' ? 'link' : 'login',
     expires: Date.now() + STATE_TTL_MS,
   });
   const params = new URLSearchParams({
@@ -161,7 +165,10 @@ async function fetchUserinfo(provider, doc, accessToken) {
   };
 }
 
-/** 校验 state 并完成令牌交换，返回归一化的外部身份 */
+/**
+ * 校验 state 并完成令牌交换，返回 { identity, mode }。
+ * mode 为发起时记录的用途：'login' 登录 / 'link' 绑定到已登录账号。
+ */
 async function finishAuthorize(provider, { code, state }) {
   if (typeof code !== 'string' || !code) throw new Error('缺少授权码');
   if (typeof state !== 'string' || !state) throw new Error('缺少 state 参数');
@@ -174,7 +181,8 @@ async function finishAuthorize(provider, { code, state }) {
   const accessToken = await exchangeCode(provider, doc, {
     code, redirectUri: entry.redirectUri, codeVerifier: entry.codeVerifier,
   });
-  return fetchUserinfo(provider, doc, accessToken);
+  const identity = await fetchUserinfo(provider, doc, accessToken);
+  return { identity, mode: entry.mode === 'link' ? 'link' : 'login' };
 }
 
 /** 把外部用户名规范化成本站用户名（3-20 位字母数字下划线），冲突时追加后缀 */
@@ -205,14 +213,49 @@ function resolveUser(identity) {
     const hash = hashPassword(crypto.randomBytes(32).toString('hex'), salt);
     const now = Date.now();
     const info = db.prepare(
-      'INSERT INTO users (username, nickname, password_hash, salt, created_at, last_seen, auth_provider, auth_sub)' +
-      ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO users (username, nickname, password_hash, salt, created_at, last_seen, auth_provider, auth_sub, shadow)' +
+      ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)'
     ).run(username, nickname, hash, salt, now, now, identity.providerId, identity.sub);
     u = getUserById(Number(info.lastInsertRowid));
     ensureFriendWithSystem(u.id);   // 与本地注册一致：自动成为「文件传输助手」好友
   }
   db.prepare('UPDATE users SET last_seen = ? WHERE id = ?').run(Date.now(), u.id);
   return u;
+}
+
+/**
+ * 把外部身份绑定到已存在的本地账号（用户在资料页主动发起）。
+ * 绑定后该外部身份 third-party 登录会直接复用此账号（含本地密码），影子账号标记清除。
+ * 返回 { user } 或 { error }。
+ */
+function linkIdentity(userId, identity) {
+  const user = db.prepare('SELECT auth_provider, auth_sub, shadow FROM users WHERE id = ?').get(userId);
+  if (!user) return { error: '账号不存在' };
+  if (user.auth_provider || user.auth_sub) return { error: '当前账号已绑定其它登录方式，请先解除绑定' };
+  const taken = db.prepare('SELECT id FROM users WHERE auth_provider = ? AND auth_sub = ?')
+    .get(identity.providerId, identity.sub);
+  if (taken) return { error: '该第三方身份已绑定其它账号' };
+  try {
+    db.prepare('UPDATE users SET auth_provider = ?, auth_sub = ?, shadow = 0 WHERE id = ?')
+      .run(identity.providerId, identity.sub, userId);
+  } catch (err) {
+    // 并发绑定的兜底：唯一索引 idx_users_auth_external 拒绝重复
+    return { error: '该第三方身份已绑定其它账号' };
+  }
+  return { user: getUserById(userId) };
+}
+
+/**
+ * 解除当前账号的第三方身份绑定。影子账号（无可用本地密码）禁止解绑，否则账号将无法登录。
+ * 返回 { user } 或 { error }。
+ */
+function unlinkProvider(userId) {
+  const user = db.prepare('SELECT auth_provider, auth_sub, shadow FROM users WHERE id = ?').get(userId);
+  if (!user) return { error: '账号不存在' };
+  if (!user.auth_provider || !user.auth_sub) return { error: '当前账号未绑定第三方登录' };
+  if (user.shadow) return { error: '该账号仅支持第三方登录，解除绑定后将无法登录' };
+  db.prepare("UPDATE users SET auth_provider = '', auth_sub = '' WHERE id = ?").run(userId);
+  return { user: getUserById(userId) };
 }
 
 /* ------------------- 票据（回调 → /oauth/finish 之间的握手） ------------------- */
@@ -258,6 +301,8 @@ module.exports = {
   startAuthorize,
   finishAuthorize,
   resolveUser,
+  linkIdentity,
+  unlinkProvider,
   issueTicket,
   consumeTicket,
   setTicketCookie,

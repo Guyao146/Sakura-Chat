@@ -33,7 +33,8 @@ export const api = {
   register: (b) => request('POST', '/auth/register', b),
   login: (b) => request('POST', '/auth/login', b),
   providers: () => request('GET', '/auth/providers'),                     // 已启用的第三方登录
-  oauthFinish: () => request('POST', '/auth/oauth/finish'),               // 票据 Cookie → 本站会话
+  oauthFinish: () => request('POST', '/auth/oauth/finish'),               // 票据 Cookie → 本站会话（绑定模式需已登录）
+  unlink: () => request('POST', '/auth/unlink'),                          // 解除第三方身份绑定
   session: () => request('GET', '/auth/session'),
   me: () => request('GET', '/auth/me'),
   // 用户

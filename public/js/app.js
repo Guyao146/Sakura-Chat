@@ -51,6 +51,7 @@ let inputBaseH = INPUT_MIN;                  // 输入框基准高度：默认�
 
 // 第三方登录方式徽章：后端 authProvider（'' 本地 / 'sakura' / 'authentik'…）→ 展示名
 const AUTH_PROVIDER_LABELS = { sakura: 'Sakura', authentik: 'Authentik' };
+let oauthProviders = [];   // 已配置的提供方（initApp 时拉取一次，资料弹窗渲染绑定入口）
 
 export async function initApp({ token, user, sessionId, sessionKey }) {
   state.me = user;
@@ -68,6 +69,7 @@ export async function initApp({ token, user, sessionId, sessionKey }) {
   bindSidebarResizer();
   applyInputHeight();
   bindInputResizer();
+  api.providers().then(({ providers = [] } = {}) => { oauthProviders = providers; }).catch(() => {});
 
   state.socket = new ChatSocket({
     token, sessionId, sessionKey,
@@ -86,6 +88,14 @@ export async function initApp({ token, user, sessionId, sessionKey }) {
 
   await Promise.all([loadConversations(), loadFriends(), refreshRequestsBadge()]);
   cacheUser(user);
+  return {
+    /** 更新当前登录者资料（绑定/解绑第三方身份后调用） */
+    applyMyUser(user) {
+      state.me = user;
+      cacheUser(user);
+      renderMyProfile();
+    },
+  };
 }
 
 function logout() {
@@ -2002,6 +2012,17 @@ $('#search-results').addEventListener('click', (e) => {
 
 function openProfileModal() {
   const me = state.me;
+  const authRow = me.authProvider
+    ? `<div class="profile-auth-row">
+         <span class="profile-auth-method">登录方式:${escapeHtml(AUTH_PROVIDER_LABELS[me.authProvider] || me.authProvider)}</span>
+         <button class="modal-btn ghost btn-sm" id="btn-unlink-auth"${me.shadow ? ' disabled title="仅第三方登录的账号无法解除绑定"' : ''}>解除绑定</button>
+       </div>`
+    : (oauthProviders.length
+      ? `<div class="profile-auth-row">
+           <span class="profile-auth-hint">绑定第三方账号后可直接用它登录</span>
+           ${oauthProviders.map(p => `<button class="modal-btn ghost btn-sm btn-link-auth" data-provider="${escapeHtml(p.id)}">绑定 ${escapeHtml(p.name)}</button>`).join('')}
+         </div>`
+      : '');
   openModal(`
     <div class="modal-header">个人资料<button class="modal-close" data-act="close">✕</button></div>
     <div class="modal-body">
@@ -2012,7 +2033,7 @@ function openProfileModal() {
       </div>
       <input class="modal-input" id="profile-nickname" value="${escapeHtml(me.nickname)}" placeholder="昵称">
       <input class="modal-input" id="profile-signature" value="${escapeHtml(me.signature || '')}" placeholder="个性签名">
-      ${me.authProvider ? `<div class="profile-auth-method">登录方式:${escapeHtml(AUTH_PROVIDER_LABELS[me.authProvider] || me.authProvider)}</div>` : ''}
+      ${authRow}
       <div class="modal-btn-row">
         <button class="modal-btn ghost" data-act="close">取消</button>
         <button class="modal-btn" id="btn-save-profile">保存</button>
@@ -2023,6 +2044,24 @@ function openProfileModal() {
   $('#modal-box').addEventListener('click', (e) => {
     if (e.target.dataset.act === 'close') closeModal();
   });
+  // 绑定第三方身份：跳转授权流（?link=1），回调后由已登录态消费票据
+  for (const btn of document.querySelectorAll('.btn-link-auth')) {
+    btn.onclick = () => { location.href = '/api/auth/oauth/' + encodeURIComponent(btn.dataset.provider) + '/start?link=1'; };
+  }
+  const unlinkBtn = $('#btn-unlink-auth');
+  if (unlinkBtn && !unlinkBtn.disabled) {
+    unlinkBtn.onclick = async () => {
+      if (!confirm('解除绑定后将无法使用该第三方账号登录本站，确定继续？')) return;
+      try {
+        const { user } = await api.unlink();
+        state.me = user;
+        cacheUser(user);
+        renderMyProfile();
+        closeModal();
+        toast('已解除绑定');
+      } catch (err) { toast(err.message || '解除绑定失败'); }
+    };
+  }
   $('#btn-change-avatar').onclick = () => $('#file-avatar').click();
   $('#file-avatar').onchange = async (e) => {
     const file = e.target.files[0];

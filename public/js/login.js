@@ -85,7 +85,7 @@ async function loadProviders() {
   } catch (_) { /* 接口不可用时静默：仅保留本地登录 */ }
 }
 
-/** 第三方登录回调：?oauth=callback 用票据换会话；?oauth=error 展示失败原因 */
+/** 第三方登录回调：?oauth=callback 用票据换会话；?oauth=error 展示失败原因；?oauth=link 为登录态过期场景 */
 async function handleOAuthCallback(onSuccess) {
   const params = new URLSearchParams(location.search);
   const mode = params.get('oauth');
@@ -103,6 +103,10 @@ async function handleOAuthCallback(onSuccess) {
       cleanUrl();
       errEl.textContent = err.message || '第三方登录失败，请重试';
     }
+  } else if (mode === 'link') {
+    // 绑定流程的回调到达登录页 = 发起绑定时所用的本站登录态已过期
+    cleanUrl();
+    errEl.textContent = '登录已过期，请先登录本站账号，再在资料页绑定第三方账号';
   } else if (mode === 'error') {
     cleanUrl();
     errEl.textContent = params.get('msg') || '第三方登录失败，请重试';

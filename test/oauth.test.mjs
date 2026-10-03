@@ -22,15 +22,16 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const base64url = buf => buf.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 
 /** 不跟随重定向的 HTTP 客户端（fetch 的 manual 模式拿不到 Location，故用 http 模块） */
-function httpRequest(url, { method = 'GET', headers = {} } = {}) {
+function httpRequest(url, { method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers }, res => {
-      let body = '';
-      res.on('data', c => { body += c; });
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
     });
     req.on('error', reject);
+    if (body !== undefined) req.write(body);
     req.end();
   });
 }
@@ -183,9 +184,10 @@ function createIdp({ expectedClientId, expectedRedirectUri }) {
   };
 }
 
-/** 走完整第三方登录流程（start → IdP 授权 → 回调），返回重定向与票据 Cookie */
-async function runFlow(chat, idp, loginAs) {
-  const r1 = await httpRequest(chat + '/api/auth/oauth/sakura/start');
+/** 走完整第三方登录/绑定流程（start → IdP 授权 → 回调），返回重定向与票据 Cookie */
+async function runFlow(chat, idp, loginAs, { link = false } = {}) {
+  const startUrl = chat + '/api/auth/oauth/sakura/start' + (link ? '?link=1' : '');
+  const r1 = await httpRequest(startUrl);
   assert.equal(r1.status, 302, 'start 应 302 到身份提供方');
   const authorizeUrl = r1.headers.location;
   const authorize = new URL(authorizeUrl);
@@ -206,14 +208,30 @@ async function runFlow(chat, idp, loginAs) {
   return { status: r3.status, location: r3.headers.location, cookie, callbackUrl };
 }
 
-/** 用票据 Cookie 换取本站会话 */
-async function finish(chat, cookie) {
-  const res = await httpRequest(chat + '/api/auth/oauth/finish', {
-    method: 'POST', headers: cookie ? { cookie, 'Content-Length': '0' } : { 'Content-Length': '0' },
-  });
+/** 用票据 Cookie 换取本站会话；bearer 非空时附带登录态（绑定模式） */
+async function finish(chat, cookie, bearer) {
+  const headers = cookie ? { cookie } : {};
+  if (bearer) headers.authorization = 'Bearer ' + bearer;
+  headers['Content-Length'] = '0';
+  const res = await httpRequest(chat + '/api/auth/oauth/finish', { method: 'POST', headers });
   let data = null;
   try { data = res.body ? JSON.parse(res.body) : null; } catch (_) {}
   return { status: res.status, data };
+}
+
+/** 注册并登录本地账号，返回 { token, user } */
+async function registerAndLogin(chat, username, password) {
+  const reg = await httpRequest(chat + '/api/auth/register', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  assert.equal(reg.status, 200, '注册应成功');
+  const login = await httpRequest(chat + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  assert.equal(login.status, 200, '登录应成功');
+  return JSON.parse(login.body);
 }
 
 test('OAuth/OIDC 第三方登录', async t => {
@@ -224,6 +242,7 @@ test('OAuth/OIDC 第三方登录', async t => {
   await idp.start(await freePort());
   idp.addUser('alice', { sub: 'sub-alice-1', preferred_username: 'Alice', name: 'Alice Lindgren' });
   idp.addUser('alice2', { sub: 'sub-alice-2', preferred_username: 'Alice', name: 'Alice Cooper' });
+  idp.addUser('carol', { sub: 'sub-carol-1', preferred_username: 'Carol', name: 'Carol Vance' });
 
   const server = await startChat({
     OAUTH_SAKURA_ISSUER: idp.issuer,
@@ -311,6 +330,79 @@ test('OAuth/OIDC 第三方登录', async t => {
     } finally {
       await plain.stop();
     }
+  });
+
+  /* ------------------- 账号绑定 / 解绑 ------------------- */
+
+  let bobToken = null, bobId = null;
+
+  await t.test('本地账号绑定第三方身份', async () => {
+    const bob = await registerAndLogin(chat, 'bob', 'pass1234');
+    bobToken = bob.token;
+    bobId = bob.user.id;
+
+    const flow = await runFlow(chat, idp, 'carol', { link: true });
+    assert.equal(flow.status, 302);
+    assert.equal(new URL(flow.location, chat).searchParams.get('oauth'), 'link', '绑定回调应跳回应用页');
+
+    // 绑定票据需要登录态：未携带 token 时拒绝
+    const noToken = await finish(chat, flow.cookie);
+    assert.equal(noToken.status, 401);
+    assert.ok(noToken.data.error);
+
+    // 票据已被消费，需重新发起
+    const flow2 = await runFlow(chat, idp, 'carol', { link: true });
+    const res = await finish(chat, flow2.cookie, bobToken);
+    assert.equal(res.status, 200);
+    assert.equal(res.data.user.id, bobId);
+    assert.equal(res.data.user.authProvider, 'sakura');
+    assert.equal(res.data.user.shadow, false);
+
+    // /api/auth/me 也应体现绑定结果
+    const me = await httpRequest(chat + '/api/auth/me', { headers: { authorization: 'Bearer ' + bobToken } });
+    assert.equal(me.status, 200);
+    assert.equal(JSON.parse(me.body).user.authProvider, 'sakura');
+
+    // 票据重放被拒绝
+    const replay = await finish(chat, flow2.cookie, bobToken);
+    assert.equal(replay.status, 401);
+  });
+
+  await t.test('绑定后该外部身份直接登录复用本地账号', async () => {
+    const flow = await runFlow(chat, idp, 'carol');
+    const { status, data } = await finish(chat, flow.cookie);
+    assert.equal(status, 200);
+    assert.equal(data.user.id, bobId, '应复用已绑定的本地账号而非新建影子账号');
+    assert.equal(data.user.username, 'bob');
+  });
+
+  await t.test('他人重复绑定同一外部身份被拒绝', async () => {
+    const dave = await registerAndLogin(chat, 'dave', 'pass1234');
+    const flow = await runFlow(chat, idp, 'carol', { link: true });
+    const res = await finish(chat, flow.cookie, dave.token);
+    assert.equal(res.status, 409);
+    assert.ok(res.data.error);
+  });
+
+  await t.test('解绑后外部身份重新登录将创建新影子账号，且影子账号不可解绑', async () => {
+    const unlink = await httpRequest(chat + '/api/auth/unlink', {
+      method: 'POST', headers: { authorization: 'Bearer ' + bobToken, 'Content-Length': '0' },
+    });
+    assert.equal(unlink.status, 200);
+    assert.equal(JSON.parse(unlink.body).user.authProvider, '');
+
+    const flow = await runFlow(chat, idp, 'carol');
+    const { data } = await finish(chat, flow.cookie);
+    assert.notEqual(data.user.id, bobId, '解绑后该外部身份不再映射到原账号');
+    assert.equal(data.user.username, 'Carol');
+    assert.equal(data.user.shadow, true);
+
+    // 影子账号没有可用的本地密码，解绑会导致账号无法登录，必须拒绝
+    const bad = await httpRequest(chat + '/api/auth/unlink', {
+      method: 'POST', headers: { authorization: 'Bearer ' + data.token, 'Content-Length': '0' },
+    });
+    assert.equal(bad.status, 400);
+    assert.ok(JSON.parse(bad.body).error);
   });
 
   await server.stop();

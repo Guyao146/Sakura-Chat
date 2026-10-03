@@ -117,7 +117,7 @@ Sakura-Chat/
 │   ├── media-lifecycle.test.mjs # 媒体资源回收单元测试（20 项，含 100 轮启停）
 │   ├── client-performance.test.mjs # 前端性能边界单元测试（请求合并、消息缓存淘汰）
 │   ├── server-performance.test.mjs # 服务端性能边界单元测试（分页/搜索/密钥/密码哈希/索引）
-│   ├── oauth.test.mjs            # 第三方登录回归（内嵌 Mock OIDC IdP，8 项）
+│   ├── oauth.test.mjs            # 第三方登录与账号绑定/解绑回归（内嵌 Mock OIDC IdP，12 项）
 │   ├── browser-login.mjs       # 真实 Chrome 登录页回归（12 项：表单/OAuth 区块显隐/回调错误/资料徽章）
 │   ├── browser-media.mjs       # 真实 Chrome 媒体回归（6 项：录音/取消/双端通话回收）
 │   ├── browser-performance.mjs # 真实 Chrome 性能回归（11 项：3000 条历史增量渲染/搜索分页）
@@ -191,6 +191,7 @@ Sakura-Chat 作为标准 OIDC 客户端，使用**授权码 + PKCE（S256）**�
 
 - 外部身份 `(provider, sub)` 与本地账号一一对应：**首次登录自动创建影子账号**（本地密码为随机串，无法用密码登录本站），再次登录复用同一账号。
 - 影子账号用户名取自 `preferred_username`（规范化为本站 3-20 位规则），与已有用户名冲突时自动追加 `_2` / `_3` 后缀，**不与同名本地账号合并**——站方无法核实两个身份属于同一人。
+- **已有本地账号可主动绑定第三方身份**：在「个人资料」弹窗点「绑定 Sakura」即走同一授权流程（`start?link=1`），回调后凭当前登录态完成绑定；绑定后用该第三方身份登录会直接复用此本地账号（本地密码仍然有效）。「解除绑定」随时可解，但**纯影子账号不可解绑**（否则账号将无法登录）。
 - 第三方登录得到的 JWT 与本地登录完全等价，WebSocket、消息加密、文件传输助手等逻辑一致。
 - 若 IdP 不可达或令牌校验失败，登录页会展示具体原因（`/login?oauth=error&msg=...`），不会把异常带给用户。
 
@@ -206,8 +207,9 @@ Sakura-Chat 作为标准 OIDC 客户端，使用**授权码 + PKCE（S256）**�
 | POST | `/api/auth/login` | 登录，返回 `token` + `sessionId` + `sessionKey` |
 | GET | `/api/auth/session` | 刷新会话密钥（页面刷新时调用，不长期保存密钥） |
 | GET | `/api/auth/providers` | 已启用的第三方登录清单（匿名，登录页渲染按钮） |
-| GET/POST | `/api/auth/oauth/<提供方>/start`、`/callback`、`finish` | 第三方登录：发起授权 / 授权码回调（换一次性票据 HttpOnly Cookie）/ 前端换本站会话 |
-| GET | `/api/auth/me` | 当前用户 |
+| GET/POST | `/api/auth/oauth/<提供方>/start`、`/callback`、`finish` | 第三方登录：发起授权（`?link=1` 为绑定模式）/ 授权码回调（换一次性票据 HttpOnly Cookie）/ 前端换本站会话（绑定票据需登录态） |
+| POST | `/api/auth/unlink` | 解除当前账号的第三方身份绑定（影子账号拒绝） |
+| GET | `/api/auth/me` | 当前用户（含 `authProvider` 登录方式与 `shadow` 影子账号标记） |
 | GET | `/api/users/search?q=` | 搜索用户 |
 | PUT | `/api/users/profile` | 修改资料（昵称/签名/头像） |
 | GET/POST/DELETE | `/api/friends...` | 好友列表、请求、同意/拒绝、删除 |
