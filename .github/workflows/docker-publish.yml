@@ -4,6 +4,7 @@ name: Publish Docker Image
 # 私有仓库的 ghcr 包同样私有，服务器上：
 #   echo $GHCR_TOKEN | docker login ghcr.io -u <github用户名> --password-stdin
 #   docker pull ghcr.io/<github用户名>/sakura-chat:latest
+# 包设为 Public 后无需登录即可拉取（见 docker-compose.ghcr.yml）。
 
 on:
   push:

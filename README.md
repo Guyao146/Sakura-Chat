@@ -71,7 +71,8 @@ Sakura-Chat/
 ├── package.json
 ├── .env.example          # 配置示例（端口 / JWT 密钥 / TLS 证书）
 ├── Dockerfile            # 多阶段构建（node:24-alpine，非 root 运行，含健康检查）
-├── docker-compose.yml    # 一键部署（数据/上传卷持久化）
+├── docker-compose.yml    # 一键部署（本地构建，数据/上传卷持久化）
+├── docker-compose.ghcr.yml  # 一键部署（直拉 GHCR 发布镜像，无需源码）
 ├── .dockerignore
 ├── .github/
 │   └── workflows/
@@ -288,7 +289,24 @@ git pull && docker compose up -d --build
 - `sakura-data` 卷保存 **主密钥 key.json + SQLite 数据库**，务必定期 `docker run --rm -v sakura-chat_sakura-data:/data -v $PWD:/backup alpine tar czf /backup/data.tgz -C /data .` 备份
 - 反代（Nginx/Caddy）终结 TLS 时需放行 WebSocket Upgrade 头，并转发 `ws` 到容器 3000 端口
 
-### 方式二：Node.js 裸机 / pm2
+### 方式二：GHCR 镜像直拉（无需源码与构建环境）
+
+镜像由 CI 在每次 push master / 打 tag 时发布到 **ghcr.io/guyao146/sakura-chat**（公开仓库，匿名可拉取）：
+
+```bash
+# 1. 配置 JWT 密钥（.env，参考 .env.example）
+echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
+
+# 2. 拉取并启动（专用 compose 文件，与方式一仅镜像来源不同）
+docker compose -f docker-compose.ghcr.yml up -d
+
+# 3. 升级
+docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
+```
+
+也可裸 `docker run`：`docker run -d --name sakura-chat -p 3000:3000 -v sakura-data:/app/server/data ghcr.io/guyao146/sakura-chat:latest`
+
+### 方式三：Node.js 裸机 / pm2
 
 ```bash
 npm ci --omit=dev
@@ -300,16 +318,8 @@ PORT=3000 JWT_SECRET=<随机值> node server/index.js
 
 | Workflow | 触发 | 作用 |
 | --- | --- | --- |
-| `ci.yml` | push / PR | 语法检查 → E2E 57 项 → Docker 镜像构建冒烟 |
-| `docker-publish.yml` | push master / tag `v*` | 构建镜像并推送到 **ghcr.io/guyao146/sakura-chat**（私有仓库即私有镜像） |
-
-服务器直接拉取已发布镜像：
-
-```bash
-echo "$GHCR_TOKEN" | docker login ghcr.io -u Guyao146 --password-stdin
-docker pull ghcr.io/guyao146/sakura-chat:latest
-# 然后用 docker-compose 的 image 字段替换为 ghcr.io 地址，或 docker run -v sakura-data:/app/server/data -p 3000:3000 ghcr.io/guyao146/sakura-chat:latest
-```
+| `ci.yml` | push / PR | 语法检查 → 单元测试 → E2E 62 项 → Docker 镜像构建冒烟 |
+| `docker-publish.yml` | push master / tag `v*` | 构建镜像并推送到 **ghcr.io/guyao146/sakura-chat**（公开镜像，服务器直接拉取，见方式二） |
 
 ### 其他生产建议
 
