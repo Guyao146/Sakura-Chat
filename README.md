@@ -293,7 +293,7 @@ git pull && docker compose up -d --build
 
 ### 方式二：GHCR 镜像直拉（无需源码与构建环境）
 
-镜像由 CI 在每次 push master / 打 tag 时发布到 **ghcr.io/guyao146/sakura-chat**（公开仓库，匿名可拉取）：
+镜像由 CI 在每次 push master / 打 tag 时发布到 **ghcr.io/guyao146/sakura-chat**（公开仓库，匿名可拉取）；发布流水线自带**匿名拉取 + 容器健康检查**冒烟，若包可见性被改回私有会自动失败：
 
 ```bash
 # 1. 配置 JWT 密钥（.env，参考 .env.example）
