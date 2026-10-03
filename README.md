@@ -195,6 +195,7 @@ Sakura-Chat 作为标准 OIDC 客户端，使用**授权码 + PKCE（S256）**�
 - **已有本地账号可主动绑定第三方身份**：在「个人资料」弹窗点「绑定 Sakura」即走同一授权流程（`start?link=1`），回调后凭当前登录态完成绑定；绑定后用该第三方身份登录会直接复用此本地账号（本地密码仍然有效）。「解除绑定」随时可解，但**纯影子账号不可解绑**（否则账号将无法登录）。
 - 第三方登录得到的 JWT 与本地登录完全等价，WebSocket、消息加密、文件传输助手等逻辑一致。
 - 若 IdP 不可达或令牌校验失败，登录页会展示具体原因（`/login?oauth=error&msg=...`），不会把异常带给用户。
+- **登录/注册限流**：密码登录同一 `IP+用户名` 连续失败 5 次将锁定 60 秒（期间即使密码正确也拒绝）；注册按 IP 限频每小时 10 次。锁定信息以 `429` 返回，前端登录页直接展示。限流按 IP 取自 `X-Forwarded-For` 首段，反代部署时请正确配置该头（见部署章节）。
 
 ---
 
@@ -204,8 +205,8 @@ Sakura-Chat 作为标准 OIDC 客户端，使用**授权码 + PKCE（S256）**�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/auth/register` | 注册 `{username, password, nickname}` |
-| POST | `/api/auth/login` | 登录，返回 `token` + `sessionId` + `sessionKey` |
+| POST | `/api/auth/register` | 注册 `{username, password, nickname}`；每 IP 每小时 10 次，超限 `429` |
+| POST | `/api/auth/login` | 登录，返回 `token` + `sessionId` + `sessionKey`；同 IP+用户名失败 5 次锁 60 秒（`429`） |
 | GET | `/api/auth/session` | 刷新会话密钥（页面刷新时调用，不长期保存密钥） |
 | GET | `/api/auth/providers` | 已启用的第三方登录清单（匿名，登录页渲染按钮） |
 | GET/POST | `/api/auth/oauth/<提供方>/start`、`/callback`、`finish` | 第三方登录：发起授权（`?link=1` 为绑定模式）/ 授权码回调（换一次性票据 HttpOnly Cookie）/ 前端换本站会话（绑定票据需登录态） |
@@ -246,7 +247,7 @@ HOST=http://127.0.0.1:3300 npm test
 
 > 也可使用 GitHub Actions：每次 push/PR 自动执行**语法检查 + 单元测试 + 62 项 E2E 回归 + Docker 镜像构建冒烟**，无需本地配置。
 
-本地还可用 `npm run test:isolated`（草稿/媒体生命周期/性能边界/第三方登录单元测试 + E2E，独立端口 + 临时数据库，不污染正式数据）或 `npm run test:browser`（附加真实 Chrome 回归：登录页 12 项、输入框布局 23 项、会话交互 17 项、媒体资源回收 6 项、性能边界 11 项）。单元测试可单独运行 `node --test test/*.test.mjs`；媒体浏览器测试使用合成音源与本地 WebRTC，无需摄像头/麦克风硬件。
+本地还可用 `npm run test:isolated`（草稿/媒体生命周期/性能边界/第三方登录单元测试 + 登录注册限流回归 + E2E，独立端口 + 临时数据库，不污染正式数据）或 `npm run test:browser`（附加真实 Chrome 回归：登录页 12 项、输入框布局 23 项、会话交互 17 项、媒体资源回收 6 项、性能边界 11 项）。单元测试可单独运行 `node --test test/*.test.mjs`；媒体浏览器测试使用合成音源与本地 WebRTC，无需摄像头/麦克风硬件。
 
 若同盘同级目录存在 [Sakura-Auth-Server](../Sakura-Auth-Server)（SakuraID），`test:isolated` 还会自动跑**真实联调**（`tools/oauth-sakuraid-smoke.mjs`）：播种临时 IdP 数据 → 启动真实 SakuraID 与接入它的 Sakura-Chat → 走完整授权码 + PKCE 流程并断言影子账号创建与复用（16 项）。目录不存在时自动跳过，CI 环境安全。
 
@@ -288,6 +289,7 @@ git pull && docker compose up -d --build
 数据安全须知：
 - `sakura-data` 卷保存 **主密钥 key.json + SQLite 数据库**，务必定期 `docker run --rm -v sakura-chat_sakura-data:/data -v $PWD:/backup alpine tar czf /backup/data.tgz -C /data .` 备份
 - 反代（Nginx/Caddy）终结 TLS 时需放行 WebSocket Upgrade 头，并转发 `ws` 到容器 3000 端口
+- 反代需正确设置 `X-Forwarded-For`（Nginx：`proxy_set_header X-Forwarded-For $remote_addr;`），登录/注册限流依赖该头识别客户端 IP；错误配置会导致同一代理后的用户共享限流配额，或被恶意请求伪造绕过单 IP 锁定
 
 ### 方式二：GHCR 镜像直拉（无需源码与构建环境）
 

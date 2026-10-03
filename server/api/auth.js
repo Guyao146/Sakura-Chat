@@ -8,6 +8,7 @@ const { db, getUserByUsername, getUserById, safeUser } = require('../db');
 const { ensureFriendWithSystem, isSystemUsername } = require('../system');
 const state = require('../state');
 const oauth = require('../oauth');
+const { loginLimiter, registerLimiter, clientIp, loginKey } = require('../rate-limit');
 
 const router = express.Router();
 const asyncRoute = fn => (req, res, next) => Promise.resolve(fn(req, res)).catch(err => {
@@ -30,9 +31,13 @@ function issueSession(userId) {
   return { sessionId: sid, sessionKey: key.toString('base64') };
 }
 
-// 注册
+// 注册（每 IP 限频，防批量刷号）
 router.post('/register', asyncRoute(async (req, res) => {
   const { username, password, nickname } = req.body || {};
+  const rk = clientIp(req);
+  if (registerLimiter.tooMany(rk)) {
+    return res.status(429).json({ error: '注册过于频繁，请稍后再试' });
+  }
   if (!validUsername(username)) return res.status(400).json({ error: '用户名需为 3-20 位字母、数字或下划线' });
   if (!validPassword(password)) return res.status(400).json({ error: '密码长度需为 6-32 位' });
   const nick = (typeof nickname === 'string' && nickname.trim()) || username;
@@ -48,18 +53,25 @@ router.post('/register', asyncRoute(async (req, res) => {
   ).run(username, nick, hash, salt, now, now);
   const user = safeUser(getUserById(info.lastInsertRowid));
   ensureFriendWithSystem(user.id);   // 自动成为「文件传输助手」好友
+  registerLimiter.hit(rk);   // 成功注册计入配额
   res.json({ message: '注册成功', user });
 }));
 
-// 登录
+// 登录（失败 5 次锁 60 秒，计数按 ip+用户名隔离）
 router.post('/login', asyncRoute(async (req, res) => {
   const { username, password } = req.body || {};
   if (!validUsername(username) || !validPassword(password)) return res.status(400).json({ error: '请输入有效的用户名和密码' });
+  const lk = loginKey(req, username);
+  if (loginLimiter.tooMany(lk)) {
+    return res.status(429).json({ error: '登录失败次数过多，请 1 分钟后再试' });
+  }
   if (isSystemUsername(username)) return res.status(403).json({ error: '该账号不可登录' });
   const u = getUserByUsername(username);
   if (!u || !await verifyPassword(password, u.salt, u.password_hash)) {
+    loginLimiter.hit(lk);
     return res.status(401).json({ error: '用户名或密码错误' });
   }
+  loginLimiter.clear(lk);   // 成功即清零，不累积历史失败
   db.prepare('UPDATE users SET last_seen = ? WHERE id = ?').run(Date.now(), u.id);
   const t = token.sign({ uid: u.id, username: u.username });
   const sess = issueSession(u.id);
