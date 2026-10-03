@@ -9,33 +9,96 @@
   <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
-  <!-- ================= 登录 / 注册 ================= -->
+  <!-- ================= 登录 / 注册（樱落设计语言：分栏品牌布局） ================= -->
   <div id="login-view" class="login-wrap">
-    <div class="login-card">
-      <div class="login-logo"><span class="logo-emoji">🌸</span> Sakura Chat</div>
-      <div class="login-sub">安全，隐私，自主</div>
-      <div class="login-tabs">
-        <button id="tab-login" class="login-tab active">登录</button>
-        <button id="tab-register" class="login-tab">注册</button>
+    <!-- 品牌面板：桌面 ≥900px 双栏时显示 -->
+    <aside class="brand-panel">
+      <div class="brand-inner">
+        <div class="brand-chip">
+          <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true">
+            <mask id="skm-brand"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="11.8" r="2.1" fill="#000"/></mask>
+            <g fill="currentColor" mask="url(#skm-brand)"><circle cx="12" cy="6.5" r="4.1"/><circle cx="6.77" cy="10.3" r="4.1"/><circle cx="8.77" cy="16.45" r="4.1"/><circle cx="15.23" cy="16.45" r="4.1"/><circle cx="17.23" cy="10.3" r="4.1"/></g>
+          </svg>
+        </div>
+        <h1 class="brand-name">Sakura Chat</h1>
+        <p class="brand-slogan">安全，隐私，自主</p>
+        <ul class="brand-features">
+          <li class="brand-feature">
+            <span class="feature-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            </span>
+            <span class="feature-text">
+              <span class="feature-title">端到端加密</span>
+              <span class="feature-desc">应用层 AES-256-GCM，消息传输与存储全程加密</span>
+            </span>
+          </li>
+          <li class="brand-feature">
+            <span class="feature-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+            </span>
+            <span class="feature-text">
+              <span class="feature-title">实时通讯</span>
+              <span class="feature-desc">在线状态、消息与音视频通话即时送达</span>
+            </span>
+          </li>
+          <li class="brand-feature">
+            <span class="feature-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+            </span>
+            <span class="feature-text">
+              <span class="feature-title">本地部署</span>
+              <span class="feature-desc">数据留在你自己的服务器，完全自主可控</span>
+            </span>
+          </li>
+        </ul>
       </div>
-      <form id="form-login" class="login-form">
-        <input id="login-username" class="login-input" placeholder="用户名" autocomplete="username" required>
-        <input id="login-password" class="login-input" type="password" placeholder="密码" autocomplete="current-password" required>
-        <button type="submit" class="login-btn">登 录</button>
-      </form>
-      <form id="form-register" class="login-form" hidden>
-        <input id="reg-username" class="login-input" placeholder="用户名（3-20 位字母/数字/下划线）" required>
-        <input id="reg-nickname" class="login-input" placeholder="昵称（留空则用用户名）">
-        <input id="reg-password" class="login-input" type="password" placeholder="密码（6-32 位）" required>
-        <button type="submit" class="login-btn">注 册</button>
-      </form>
-      <div id="login-oauth" class="login-oauth" hidden>
-        <div class="login-divider"><span>或使用第三方账号</span></div>
-        <div id="oauth-btns" class="oauth-btns"></div>
+      <svg class="brand-deco" viewBox="0 0 24 24" aria-hidden="true">
+        <mask id="skm-deco"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="11.8" r="2.1" fill="#000"/></mask>
+        <g fill="currentColor" mask="url(#skm-deco)"><circle cx="12" cy="6.5" r="4.1"/><circle cx="6.77" cy="10.3" r="4.1"/><circle cx="8.77" cy="16.45" r="4.1"/><circle cx="15.23" cy="16.45" r="4.1"/><circle cx="17.23" cy="10.3" r="4.1"/></g>
+      </svg>
+      <p class="brand-foot">Sakura Chat · 自托管的加密即时通讯</p>
+    </aside>
+
+    <!-- 表单面板 -->
+    <section class="form-panel">
+      <div class="form-col">
+        <!-- 窄屏（≤899px）品牌行：替代整块品牌面板 -->
+        <div class="mobile-brand">
+          <span class="mobile-chip" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <mask id="skm-mobile"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="11.8" r="2.1" fill="#000"/></mask>
+              <g fill="currentColor" mask="url(#skm-mobile)"><circle cx="12" cy="6.5" r="4.1"/><circle cx="6.77" cy="10.3" r="4.1"/><circle cx="8.77" cy="16.45" r="4.1"/><circle cx="15.23" cy="16.45" r="4.1"/><circle cx="17.23" cy="10.3" r="4.1"/></g>
+            </svg>
+          </span>
+          <span class="mobile-name">Sakura Chat</span>
+        </div>
+        <h2 class="form-title">开始使用</h2>
+        <p class="form-subtitle">登录或创建账号，开启你的加密聊天</p>
+        <div class="login-card">
+          <div class="login-tabs">
+            <button id="tab-login" class="login-tab active">登录</button>
+            <button id="tab-register" class="login-tab">注册</button>
+          </div>
+          <form id="form-login" class="login-form">
+            <input id="login-username" class="login-input" placeholder="用户名" autocomplete="username" required>
+            <input id="login-password" class="login-input" type="password" placeholder="密码" autocomplete="current-password" required>
+            <button type="submit" class="login-btn">登 录</button>
+          </form>
+          <form id="form-register" class="login-form" hidden>
+            <input id="reg-username" class="login-input" placeholder="用户名（3-20 位字母/数字/下划线）" required>
+            <input id="reg-nickname" class="login-input" placeholder="昵称（留空则用用户名）">
+            <input id="reg-password" class="login-input" type="password" placeholder="密码（6-32 位）" required>
+            <button type="submit" class="login-btn">注 册</button>
+          </form>
+          <div id="login-oauth" class="login-oauth" hidden>
+            <div class="login-divider"><span>或使用第三方账号</span></div>
+            <div id="oauth-btns" class="oauth-btns"></div>
+          </div>
+          <div id="login-error" class="login-error"></div>
+          <div class="login-tip">应用层 AES-256-GCM 端到端加密 · 聊天记录加密落库</div>
+        </div>
       </div>
-      <div id="login-error" class="login-error"></div>
-      <div class="login-tip">应用层 AES-256-GCM 端到加密 · 聊天记录加密落库</div>
-    </div>
+    </section>
   </div>
 
   <!-- ================= 主应用 ================= -->
