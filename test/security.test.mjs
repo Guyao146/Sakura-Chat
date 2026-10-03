@@ -107,3 +107,38 @@ test('上传资源安全：SVG 强制附件下载 + nosniff 头', async () => {
     await chat.stop();
   }
 });
+
+test('群资料越权：非成员读取群成员名单被拒绝', async () => {
+  const chat = await startChat();
+  try {
+    const base = 'grp_' + Date.now();
+    const mk = async name => {
+      await post(chat.origin + '/api/auth/register', { username: name, password: 'pass1234' });
+      const r = await post(chat.origin + '/api/auth/login', { username: name, password: 'pass1234' });
+      return r.data;
+    };
+    const a = await mk(base + '_a'), b = await mk(base + '_b'), c = await mk(base + '_b2'), d = await mk(base + '_d');
+    const res = await fetch(chat.origin + '/api/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + a.token },
+      body: JSON.stringify({ name: '测试群', memberIds: [b.user.id, c.user.id] }),
+    });
+    assert.equal(res.status, 200);
+    const { group } = await res.json();
+
+    // 成员可读
+    const okRes = await fetch(chat.origin + '/api/groups/' + group.id, {
+      headers: { Authorization: 'Bearer ' + a.token },
+    });
+    assert.equal(okRes.status, 200);
+    assert.ok((await okRes.json()).group.members.length >= 3);
+
+    // 非成员被拒（曾经返回完整成员名单）
+    const badRes = await fetch(chat.origin + '/api/groups/' + group.id, {
+      headers: { Authorization: 'Bearer ' + d.token },
+    });
+    assert.equal(badRes.status, 403);
+  } finally {
+    await chat.stop();
+  }
+});

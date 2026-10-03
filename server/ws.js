@@ -342,6 +342,8 @@ function handlePat(ws, p) {
   const me = getUserById(ws.userId);
   const who = to ? getUserById(to) : null;
   if (to && !who) return;
+  // 只能拍当前会话内的成员，避免指定任意用户泄露其昵称
+  if (to && !(svc.convParticipants(convId) || []).includes(to)) return;
   const text = `🤚 ${me.nickname} 拍了拍${who && who.id !== ws.userId ? ' ' + who.nickname : '自己'}`;
   const sys = insertSystemMessage(convId.startsWith('g_') ? 'group' : 'single', convId, text);
   const sysMsg = {

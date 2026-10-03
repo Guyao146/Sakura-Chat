@@ -19,12 +19,13 @@ router.get('/', (req, res) => {
   res.json({ groups: rows });
 });
 
-/** 群资料（含成员） */
+/** 群资料（含成员，仅成员可见，防止非成员遍历群成员名单） */
 router.get('/:id', (req, res) => {
   const gid = Number(req.params.id);
   if (!gid) return res.status(400).json({ error: '无效的群' });
   const g = db.prepare('SELECT * FROM groups WHERE id = ?').get(gid);
   if (!g) return res.status(404).json({ error: '群不存在' });
+  if (!isGroupMemberOf(gid, req.user.id)) return res.status(403).json({ error: '你不是群成员' });
   const members = db.prepare(`
     SELECT m.role, m.joined_at, m.display_name, u.id, u.username, u.nickname, u.avatar
     FROM group_members m JOIN users u ON u.id = m.user_id
