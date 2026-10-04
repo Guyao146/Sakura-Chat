@@ -35,14 +35,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 镜像标签：分支推送 → latest + 完整提交号；git tag（v*）推送 → 附加版本号标签（如 v1.1.0）
+      - name: 镜像元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.repo.outputs.image }}
+          tags: |
+            type=raw,value=latest
+            type=ref,event=tag
+            type=sha,format=long,prefix=
+
       - name: 构建并推送镜像
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ steps.repo.outputs.image }}:latest
-            ghcr.io/${{ steps.repo.outputs.image }}:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
