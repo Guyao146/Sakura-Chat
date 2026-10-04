@@ -353,5 +353,5 @@ PORT=3000 JWT_SECRET=<随机值> node server/index.js
 本项目采用 **Sakura-License v1.2**（源码可用许可证，**非 OSI 开源许可证**）：源码可见、受覆盖的衍生作品须同许可共享、保留署名，**特定商用须事先取得版权人书面授权**（个人学习、教育、非营利活动与免费公开分享无需另行授权）。
 
 - 完整许可正文见仓库根目录 [LICENSE](LICENSE)；采用范围、生效提交、排除项与第三方组件清单见 [NOTICE.md](NOTICE.md)。
-- 正文为固定文本，逐字取自 [Sakura-EcoSystem-wiki](https://github.com/Guyao146/Sakura-EcoSystem-wiki/blob/a8cbb9ee3741b32bd11d511d227a1a96bf256146/licenses/Sakura-License-1.2-draft.md) 的提交 `a8cbb9e`。
+- 正文为正式固定版本，逐字取自 [Sakura-EcoSystem-wiki](https://github.com/Guyao146/Sakura-EcoSystem-wiki/blob/359d2e9b7e4446c7980e723d93bc4cac89d36910/licenses/Sakura-License-1.2.md) 的提交 `359d2e9`（2026-10-04 发布；条文与采用时的审阅稿修订 3 逐字一致）。
 - 运行依赖 `express` 与 `ws`（均为 MIT）保持各自原有许可，不因一同分发而改用 Sakura-License。

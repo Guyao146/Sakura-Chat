@@ -19,14 +19,15 @@
 
 ## 固定许可版本
 
-- 许可正文：`LICENSE`，当前为 **Sakura-License v1.2 审阅稿**（文本标识 `Sakura-License-1.2-draft`，审阅修订 3，修订日期 2026-10-02）。
-- 该许可限制特定商业利用，属于源码可用（source-available）许可证，不是 OSI 批准的开源许可证，也没有 SPDX 短标识；在物料清单中引用写作 `LicenseRef-Sakura-License-1.2-draft`。
-- v1.2 正文自身声明其为拟议文本。权利主体在此作出明确采用声明：自本仓库首次同时包含本声明与该 `LICENSE` 的提交起，对本作品适用 Sakura-License v1.2 审阅稿；正式固定版本发布后将按采用指引整体替换 `LICENSE`，不影响已授予的权利。
+- 许可正文：`LICENSE`，当前为 **Sakura-License v1.2 正式固定正文**（文本标识 `Sakura-License-1.2`，发布日期 2026-10-04），逐字取自 Sakura-EcoSystem-wiki 提交 `359d2e9` 的 `licenses/Sakura-License-1.2.md`。
+- 该许可限制特定商业利用，属于源码可用（source-available）许可证，不是 OSI 批准的开源许可证，也没有 SPDX 短标识；在物料清单中引用写作 `LicenseRef-Sakura-License-1.2`。
+- 第 1 至 14 条与本仓库首次采用时的审阅稿修订 3（`Sakura-License-1.2-draft`）逐字一致，仅标题、文本标识、前言与第 15 条的状态表述不同；正式固定正文替换 `LICENSE` 不改变或撤销已授予的权利。
 - npm 元数据：`package.json` 与 `package-lock.json` 的 `license` 字段写作 `SEE LICENSE IN LICENSE`。
 
 ## 生效边界
 
-- 首次适用：包含本声明与当前 `LICENSE` 的 `master` 分支提交，及此后发布的全部版本。
+- 首次适用：包含本声明与 `LICENSE` 的首个 `master` 分支提交（2026-10-04），及此后发布的全部版本。
+- 本次将 `LICENSE` 替换为正式固定正文，条文与采用文本逐字一致，生效边界与已授予的权利不变。
 - 本仓库此前没有 LICENSE 文件与许可声明，不存在依本许可或其他许可授予的历史权利。
 
 ## 历史权利
