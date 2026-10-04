@@ -12,6 +12,9 @@ export function initLogin(onSuccess) {
     const isLogin = tab === 'login';
     $('#tab-login').classList.toggle('active', isLogin);
     $('#tab-register').classList.toggle('active', !isLogin);
+    $('.login-tabs').dataset.active = tab;
+    $('#tab-login').setAttribute('aria-pressed', String(isLogin));
+    $('#tab-register').setAttribute('aria-pressed', String(!isLogin));
     $('#form-login').hidden = !isLogin;
     $('#form-register').hidden = isLogin;
     $('#login-error').textContent = '';
@@ -19,24 +22,28 @@ export function initLogin(onSuccess) {
   $('#tab-login').onclick = () => switchTab('login');
   $('#tab-register').onclick = () => switchTab('register');
 
-  const bindFormSubmit = (formId, btnLabel, action) => {
-    $(formId).addEventListener('submit', async (e) => {
+  const bindFormSubmit = (formId, action) => {
+    $(formId).onsubmit = async (e) => {
       e.preventDefault();
+      const btn = e.target.querySelector('button[type=submit]');
+      if (btn.disabled) return;
       const errEl = $('#login-error');
       errEl.textContent = '';
-      const btn = e.target.querySelector('button[type=submit]');
       const originLabel = btn.textContent;
       try {
         btn.disabled = true; btn.textContent = '处理中...';
+        btn.setAttribute('aria-busy', 'true');
         await action(e.target);
       } catch (err) {
         errEl.textContent = err.message;
-        btn.disabled = false; btn.textContent = originLabel;   // 失败后恢复按钮，可直接重输
+      } finally {
+        btn.disabled = false; btn.textContent = originLabel;
+        btn.removeAttribute('aria-busy');
       }
-    });
+    };
   };
 
-  bindFormSubmit('#form-login', '登 录', async () => {
+  bindFormSubmit('#form-login', async () => {
     const username = $('#login-username').value.trim();
     const password = $('#login-password').value;
     const data = await api.login({ username, password });
@@ -44,7 +51,7 @@ export function initLogin(onSuccess) {
     onSuccess(data);
   });
 
-  bindFormSubmit('#form-register', '注 册', async () => {
+  bindFormSubmit('#form-register', async () => {
     const username = $('#reg-username').value.trim();
     const nickname = $('#reg-nickname').value.trim();
     const password = $('#reg-password').value;

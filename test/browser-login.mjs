@@ -63,7 +63,21 @@ try {
   await click('.modal-close');
   await wait(`!document.querySelector('#modal-box .modal-body')`);
 
-  // 退出登录
+  // 关于弹窗：署名 / 许可 / 源码入口（Sakura-License v1.2 第 5 条 GUI 要求）
+  await click('#btn-about');
+  await wait(`document.querySelector('.about-body').checkVisibility()`);
+  check('关于弹窗包含署名、许可与源码入口', await evaluate(`(() => {
+    const text = document.querySelector('#modal-box').textContent;
+    const links = Array.from(document.querySelectorAll('#modal-box a')).map(a => a.href);
+    return text.includes('Sakura Chat') && text.includes('Sakura-License v1.2')
+      && links.includes('https://github.com/Guyao146/Sakura-Chat')
+      && links.includes('https://github.com/Guyao146/Sakura-Chat/blob/master/LICENSE')
+      && links.includes('https://github.com/Guyao146/Sakura-Chat/issues');
+  })()`));
+  check('关于弹窗外链全部新标签打开且带 rel=noopener', await evaluate(`Array.from(document.querySelectorAll('#modal-box a')).every(a =>
+    a.target === '_blank' && a.rel.includes('noopener'))`));
+  await click('.modal-close');
+  await wait(`!document.querySelector('#modal-box .modal-body')`);
   await click('#btn-logout');
   await wait(`!localStorage.getItem('sc_token') && document.querySelector('#login-view').checkVisibility()`);
   check('退出登录回到登录页并清除 token', true);

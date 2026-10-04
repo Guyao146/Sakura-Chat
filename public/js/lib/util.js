@@ -75,11 +75,8 @@ export function openModal(html) {
   old.replaceWith(fresh);
   fresh.innerHTML = html;
   const mask = $('#modal-mask');
+  // 遮罩由 hidden → 可见触发 CSS 动画；新弹窗节点自带入场，无需强制同步布局。
   mask.hidden = false;
-  // 强制重排，每次打开都重播遮罩淡入动画
-  mask.classList.remove('anim-fade');
-  void mask.offsetWidth;
-  mask.classList.add('anim-fade');
 }
 
 export function closeModal() {

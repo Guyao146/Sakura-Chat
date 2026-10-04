@@ -7,12 +7,35 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%B8%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/css/theme.css">
 </head>
 <body>
+  <!-- 本地线性图标，无外部字体或图标依赖 -->
+  <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="ico-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+      <symbol id="ico-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="ico-group" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></symbol>
+      <symbol id="ico-star" viewBox="0 0 24 24"><path d="m12 3 2.8 5.8 6.4.9-4.6 4.5 1.1 6.3-5.7-3-5.7 3 1.1-6.3-4.6-4.5 6.4-.9Z"/></symbol>
+      <symbol id="ico-inbox" viewBox="0 0 24 24"><path d="m3 14 3-10h12l3 10v6H3ZM3 14h5l2 3h4l2-3h5"/></symbol>
+      <symbol id="ico-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
+      <symbol id="ico-logout" viewBox="0 0 24 24"><path d="M10 4H4v16h6M9 12h12m-4-4 4 4-4 4"/></symbol>
+      <symbol id="ico-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></symbol>
+      <symbol id="ico-phone" viewBox="0 0 24 24"><path d="M5 3h4l2 5-3 2a14 14 0 0 0 6 6l2-3 5 2v4a2 2 0 0 1-2 2A18 18 0 0 1 3 5a2 2 0 0 1 2-2Z"/></symbol>
+      <symbol id="ico-video" viewBox="0 0 24 24"><rect x="3" y="6" width="12" height="12" rx="3"/><path d="m15 10 6-4v12l-6-4"/></symbol>
+      <symbol id="ico-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 14a4 4 0 0 0 8 0M8 9h.01M16 9h.01"/></symbol>
+      <symbol id="ico-sticker" viewBox="0 0 24 24"><path d="M21 13V6a3 3 0 0 0-3-3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h7Zm0 0h-5a3 3 0 0 0-3 3v5M8 9h.01M15 9h.01M8 13l2 1"/></symbol>
+      <symbol id="ico-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></symbol>
+      <symbol id="ico-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></symbol>
+      <symbol id="ico-clip" viewBox="0 0 24 24"><path d="m8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9M7 16l8-8"/></symbol>
+      <symbol id="ico-send" viewBox="0 0 24 24"><path d="m21 3-7 18-3-8-8-3Zm-10 10L21 3"/></symbol>
+    </defs>
+  </svg>
   <!-- ================= 登录 / 注册（樱落设计语言：分栏品牌布局） ================= -->
   <div id="login-view" class="login-wrap">
     <!-- 品牌面板：桌面 ≥900px 双栏时显示 -->
     <aside class="brand-panel">
+      <div class="brand-petals" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
       <div class="brand-inner">
         <div class="brand-chip">
           <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true">
@@ -28,8 +51,8 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
             </span>
             <span class="feature-text">
-              <span class="feature-title">端到端加密</span>
-              <span class="feature-desc">应用层 AES-256-GCM，消息传输与存储全程加密</span>
+              <span class="feature-title">消息加密保护</span>
+              <span class="feature-desc">应用层 AES-256-GCM，消息正文加密传输与存储</span>
             </span>
           </li>
           <li class="brand-feature">
@@ -75,9 +98,9 @@
         <h2 class="form-title">开始使用</h2>
         <p class="form-subtitle">登录或创建账号，开启你的加密聊天</p>
         <div class="login-card">
-          <div class="login-tabs">
-            <button id="tab-login" class="login-tab active">登录</button>
-            <button id="tab-register" class="login-tab">注册</button>
+          <div class="login-tabs" data-active="login" aria-label="账号操作">
+            <button id="tab-login" class="login-tab active" aria-pressed="true" aria-controls="form-login">登录</button>
+            <button id="tab-register" class="login-tab" aria-pressed="false" aria-controls="form-register">注册</button>
           </div>
           <form id="form-login" class="login-form">
             <input id="login-username" class="login-input" placeholder="用户名" autocomplete="username" required>
@@ -94,8 +117,8 @@
             <div class="login-divider"><span>或使用第三方账号</span></div>
             <div id="oauth-btns" class="oauth-btns"></div>
           </div>
-          <div id="login-error" class="login-error"></div>
-          <div class="login-tip">应用层 AES-256-GCM 端到端加密 · 聊天记录加密落库</div>
+          <div id="login-error" class="login-error" role="status" aria-live="polite"></div>
+          <div class="login-tip">应用层 AES-256-GCM 加密 · 服务端可解密，非端到端加密</div>
         </div>
       </div>
     </section>
@@ -113,28 +136,32 @@
       </div>
       <div class="toolbar">
         <div class="conv-search-box">
-          <span class="search-ico">🔍</span>
+          <span class="search-ico" aria-hidden="true"><svg class="ui-icon"><use href="#ico-search"/></svg></span>
           <input id="conv-search" placeholder="搜索聊天记录" autocomplete="off">
         </div>
-        <button class="icon-btn" id="btn-add-friend" title="添加好友">➕</button>
-        <button class="icon-btn" id="btn-create-group" title="发起群聊">👥</button>
+        <button class="icon-btn" id="btn-add-friend" title="添加好友" aria-label="添加好友"><svg class="ui-icon" aria-hidden="true"><use href="#ico-plus"/></svg></button>
+        <button class="icon-btn" id="btn-create-group" title="发起群聊" aria-label="发起群聊"><svg class="ui-icon" aria-hidden="true"><use href="#ico-group"/></svg></button>
       </div>
+      <div class="sidebar-heading"><span>消息</span><span class="sidebar-wordmark">SAKURA CHAT</span></div>
       <div class="conv-list" id="conv-list"></div>
       <nav class="sidebar-foot">
         <button class="foot-btn" id="btn-status" title="在线状态">🟢</button>
-        <button class="foot-btn" id="btn-saved" title="我的收藏">⭐</button>
-        <button class="foot-btn" id="btn-requests" title="好友请求">📨<span id="requests-badge" class="badge" hidden></span></button>
-        <button class="foot-btn" id="btn-profile" title="个人资料">👤</button>
-        <button class="foot-btn" id="btn-logout" title="退出登录">🚪</button>
+        <button class="foot-btn" id="btn-saved" title="我的收藏" aria-label="我的收藏"><svg class="ui-icon" aria-hidden="true"><use href="#ico-star"/></svg></button>
+        <button class="foot-btn" id="btn-requests" title="好友请求" aria-label="好友请求"><svg class="ui-icon" aria-hidden="true"><use href="#ico-inbox"/></svg><span id="requests-badge" class="badge" hidden></span></button>
+        <button class="foot-btn" id="btn-profile" title="个人资料" aria-label="个人资料"><svg class="ui-icon" aria-hidden="true"><use href="#ico-user"/></svg></button>
+        <button class="foot-btn" id="btn-about" title="关于 Sakura Chat" aria-label="关于 Sakura Chat"><svg class="ui-icon" aria-hidden="true"><use href="#ico-info"/></svg></button>
+        <button class="foot-btn" id="btn-logout" title="退出登录" aria-label="退出登录"><svg class="ui-icon" aria-hidden="true"><use href="#ico-logout"/></svg></button>
       </nav>
     </aside>
     <div class="sidebar-resizer" id="sidebar-resizer" title="拖动调整宽度"></div>
 
     <main class="chat-area">
       <div class="chat-empty" id="chat-empty">
-        <div class="chat-empty-logo">🌸</div>
-        <p>Sakura Chat</p>
-        <span>选择左侧会话开始聊天，所有消息均已加密传输</span>
+        <div class="chat-empty-logo" aria-hidden="true">🌸</div>
+        <div class="empty-eyebrow">A LITTLE CLOSER</div>
+        <p>让每一次相遇，都有回响</p>
+        <span>选一位朋友，把今天的小事说给 TA 听。</span>
+        <div class="empty-note"><span aria-hidden="true">✧</span> Sakura Chat · 你的私享聊天空间</div>
       </div>
       <div class="chat-main" id="chat-main" hidden>
         <header class="chat-header">
@@ -143,9 +170,9 @@
             <div class="chat-title" id="chat-title"></div>
             <div class="chat-subtitle" id="chat-subtitle"></div>
           </div>
-          <button class="icon-btn" id="btn-call-voice" title="语音通话" hidden>📞</button>
-          <button class="icon-btn" id="btn-call-video" title="视频通话" hidden>📹</button>
-          <button class="icon-btn" id="btn-search-history" title="搜索聊天记录">🔍</button>
+          <button class="icon-btn" id="btn-call-voice" title="语音通话" aria-label="语音通话" hidden><svg class="ui-icon" aria-hidden="true"><use href="#ico-phone"/></svg></button>
+          <button class="icon-btn" id="btn-call-video" title="视频通话" aria-label="视频通话" hidden><svg class="ui-icon" aria-hidden="true"><use href="#ico-video"/></svg></button>
+          <button class="icon-btn" id="btn-search-history" title="搜索聊天记录" aria-label="搜索聊天记录"><svg class="ui-icon" aria-hidden="true"><use href="#ico-search"/></svg></button>
           <button class="icon-btn" id="btn-info" title="会话信息">⋯</button>
         </header>
         <div class="msg-list" id="msg-list"></div>
@@ -170,15 +197,15 @@
             <button class="icon-btn draft-cancel" id="forward-cancel" title="取消转发">✕</button>
           </div>
           <div class="input-row">
-            <button class="icon-btn" id="btn-sticker" title="表情包">😺</button>
-            <button class="icon-btn" id="btn-emoji" title="表情">😊</button>
-            <button class="icon-btn" id="btn-voice" title="按住说话">🎙️</button>
-            <button class="icon-btn" id="btn-image" title="发送图片">🖼️</button>
-            <button class="icon-btn" id="btn-file" title="发送文件">📎</button>
+            <button class="icon-btn" id="btn-sticker" title="表情包" aria-label="表情包"><svg class="ui-icon" aria-hidden="true"><use href="#ico-sticker"/></svg></button>
+            <button class="icon-btn" id="btn-emoji" title="表情" aria-label="表情"><svg class="ui-icon" aria-hidden="true"><use href="#ico-smile"/></svg></button>
+            <button class="icon-btn" id="btn-voice" title="按住说话" aria-label="按住说话"><svg class="ui-icon" aria-hidden="true"><use href="#ico-mic"/></svg></button>
+            <button class="icon-btn" id="btn-image" title="发送图片" aria-label="发送图片"><svg class="ui-icon" aria-hidden="true"><use href="#ico-image"/></svg></button>
+            <button class="icon-btn" id="btn-file" title="发送文件" aria-label="发送文件"><svg class="ui-icon" aria-hidden="true"><use href="#ico-clip"/></svg></button>
             <input type="file" id="file-image" accept="image/*" hidden>
             <input type="file" id="file-any" hidden>
             <textarea id="msg-input" rows="1" placeholder="输入消息，Enter 发送 / Shift+Enter 换行"></textarea>
-            <button class="send-btn" id="btn-send">发送</button>
+            <button class="send-btn" id="btn-send"><span>发送</span><svg class="ui-icon" aria-hidden="true"><use href="#ico-send"/></svg></button>
           </div>
         </div>
         <div class="voice-recording" id="voice-recording" hidden>
@@ -217,7 +244,7 @@
   <div class="modal-mask" id="modal-mask" hidden>
     <div class="modal" id="modal-box"></div>
   </div>
-  <div class="toast-wrap" id="toast-wrap"></div>
+  <div class="toast-wrap" id="toast-wrap" role="status" aria-live="polite" aria-atomic="false"></div>
 
   <script type="module" src="/js/main.js"></script>
 </body>

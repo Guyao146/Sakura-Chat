@@ -53,6 +53,14 @@ let inputBaseH = INPUT_MIN;                  // 输入框基准高度：默认�
 const AUTH_PROVIDER_LABELS = { sakura: 'Sakura', authentik: 'Authentik' };
 let oauthProviders = [];   // 已配置的提供方（initApp 时拉取一次，资料弹窗渲染绑定入口）
 
+// 关于弹窗：Sakura-License v1.2 第 5 条要求的 GUI 署名 / 许可 / 源码入口
+const APP_VERSION = '1.1.0';   // 与 package.json 保持一致
+const ABOUT_LINKS = {
+  license: 'https://github.com/Guyao146/Sakura-Chat/blob/master/LICENSE',
+  repo: 'https://github.com/Guyao146/Sakura-Chat',
+  issues: 'https://github.com/Guyao146/Sakura-Chat/issues',
+};
+
 export async function initApp({ token, user, sessionId, sessionKey }) {
   state.me = user;
   let storage;
@@ -919,6 +927,7 @@ function bindGlobalEvents() {
   $('#btn-logout').onclick = () => { logout(); };
   $('#btn-saved')?.addEventListener('click', openSavedModal);
   $('#btn-status')?.addEventListener('click', openStatusPicker);
+  $('#btn-about')?.addEventListener('click', openAboutModal);
   $('#conv-search').addEventListener('input', () => renderConvList());
   $('#conv-search').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') openGlobalSearch(e.target.value.trim());
@@ -2089,6 +2098,28 @@ function openProfileModal() {
       await loadConversations();
     } catch (err) { toast(err.message); }
   };
+}
+
+/* 关于弹窗（Sakura-License v1.2 第 5 条 GUI 署名 / 许可 / 源码入口） */
+function openAboutModal() {
+  openModal(`
+    <div class="modal-header">关于 Sakura Chat<button class="modal-close" data-act="close">✕</button></div>
+    <div class="modal-body about-body">
+      <div class="about-brand">
+        <div class="about-logo" aria-hidden="true">🌸</div>
+        <div class="about-name">Sakura Chat<span class="about-version">v${APP_VERSION}</span></div>
+        <div class="about-desc">类微信的实时聊天应用 · Node.js 全栈 · 传输加密 + 加密存储</div>
+      </div>
+      <div class="about-row"><span class="about-label">许可</span><span>按 <a href="${ABOUT_LINKS.license}" target="_blank" rel="noopener">Sakura-License v1.2</a> 授权：源码可用、限制特定商业利用（非 OSI 开源许可证），商用须先取得书面授权。</span></div>
+      <div class="about-row"><span class="about-label">源码</span><a href="${ABOUT_LINKS.repo}" target="_blank" rel="noopener">${ABOUT_LINKS.repo}</a></div>
+      <div class="about-row"><span class="about-label">版权</span><span>版权归属以 Git 提交记录为准。商业许可与法律通知：<a href="${ABOUT_LINKS.issues}" target="_blank" rel="noopener">GitHub Issues</a></span></div>
+      <p class="about-note">运行依赖 express 与 ws，各自保持 MIT 许可。</p>
+      <div class="modal-btn-row"><button class="modal-btn" data-act="close">关闭</button></div>
+    </div>`);
+
+  $('#modal-box').addEventListener('click', (e) => {
+    if (e.target.dataset.act === 'close') closeModal();
+  });
 }
 
 function openAddFriendModal() {

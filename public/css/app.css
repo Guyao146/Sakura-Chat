@@ -380,6 +380,17 @@
 .modal-btn.danger { background: var(--danger); }
 .modal-btn-row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
 
+/* 关于弹窗 */
+.about-brand { text-align: center; padding: 4px 0 12px; }
+.about-logo { font-size: 40px; line-height: 1; }
+.about-name { font-size: 17px; font-weight: 600; margin-top: 8px; }
+.about-version { font-size: 12px; color: var(--text-light); margin-left: 6px; font-weight: 400; }
+.about-desc { font-size: 12px; color: var(--text-light); margin-top: 4px; }
+.about-row { display: flex; gap: 10px; font-size: 13px; line-height: 1.7; color: #555; padding: 8px 0; border-top: 1px solid var(--border); }
+.about-row .about-label { flex-shrink: 0; width: 3.5em; color: var(--text-light); }
+.about-row a { color: var(--primary); word-break: break-all; }
+.about-note { font-size: 12px; color: var(--text-light); margin: 10px 0 0; }
+
 .user-row { display: flex; align-items: center; padding: 8px 0; }
 .user-row .avatar { width: 38px; height: 38px; border-radius: 8px; font-size: 15px; }
 .user-row .info { flex: 1; margin-left: 10px; overflow: hidden; }
