@@ -8,46 +8,39 @@
  * - lockSec 窗口过期后自动放行，窗口内的重复命中不续期，避免「一直被刷就一直锁」
  * - clock 可注入，便于单元测试推进时间
  *
- * 部署注意：clientIp 信任 X-Forwarded-For 首段（与 OAuth 回调地址推断一致）。
- * 反向代理务必覆盖该头（Nginx: proxy_set_header X-Forwarded-For $remote_addr;），
- * 否则同一代理后的用户共享计数；直连暴露端口时该头可被伪造，应保证仅代理可访问。
+ * 部署注意：clientIp 使用 Express 按 TRUST_PROXY 白名单解析后的 req.ip。
+ * 默认不信任代理头。只配置实际代理的 IP/CIDR，代理必须覆盖转发头。
+ * 新键突发超过硬上限时仍会逐出最旧键，这是内存保护的有意取舍。
  */
 
 function createLimiter({ maxFails = 5, lockSec = 60, maxKeys = 5000, clock = Date.now } = {}) {
-  const attempts = new Map();   // key -> { count, first }
+  const attempts = new Map();   // 插入顺序即窗口起始顺序，命中不续期/不移动键
+  const windowMs = lockSec * 1000;
 
-  /**
-   * 惰性清理：先删过期键，超硬上限时按窗口起始时间逐出最旧的键。
-   * 注意：突发的大量新键可能逐出仍在锁定中的旧键（提前解锁），
-   * 这是有意为之——内存占用有界比单个键的锁状态更重要（默认 maxKeys=5000，正常使用不会触及）。
-   */
-  function prune() {
-    if (attempts.size === 0) return;
-    const t = clock();
-    if (attempts.size > 64) {
-      for (const [k, v] of attempts) if (t - v.first >= lockSec * 1000) attempts.delete(k);
-    }
-    if (attempts.size >= maxKeys) {
-      // 逐出至 maxKeys-1，使随后的插入恰好不超过上限
-      const oldest = [...attempts].sort((a, b) => a[1].first - b[1].first);
-      for (let i = 0; i < oldest.length && attempts.size >= maxKeys; i++) attempts.delete(oldest[i][0]);
-    }
+  function current(key, t) {
+    const rec = attempts.get(key);
+    if (rec && t - rec.first >= windowMs) { attempts.delete(key); return null; }
+    return rec;
   }
 
   return {
-    /** 命中一次（窗口过期则重开新窗口） */
+    /** 命中一次；仅插入新键时回收容量，已有键不能被意外逐出 */
     hit(key) {
-      prune();
       const t = clock();
-      const rec = attempts.get(key);
-      if (!rec || t - rec.first >= lockSec * 1000) attempts.set(key, { count: 1, first: t });
-      else rec.count += 1;
+      const rec = current(key, t);
+      if (rec) { rec.count += 1; return; }
+      // 固定窗口 + Map 插入顺序：只扫描已过期的前缀，无需全表扫描/排序。
+      for (const [k, v] of attempts) {
+        if (t - v.first < windowMs) break;
+        attempts.delete(k);
+      }
+      if (attempts.size >= maxKeys) attempts.delete(attempts.keys().next().value);
+      attempts.set(key, { count: 1, first: t });
     },
-    /** 是否已锁定 */
+    /** 查询为 O(1)，表满时也绝不逐出有效键 */
     tooMany(key) {
-      prune();
-      const rec = attempts.get(key);
-      return !!rec && rec.count >= maxFails && clock() - rec.first < lockSec * 1000;
+      const rec = current(key, clock());
+      return !!rec && rec.count >= maxFails;
     },
     /** 成功后清零（登录专用：只记失败，成功即解锁） */
     clear(key) { attempts.delete(key); },
@@ -63,10 +56,8 @@ const loginLimiter = createLimiter({ maxFails: 5, lockSec: 60 });
 /** 注册限流：key = ip，成功也计入配额，每小时 10 次 */
 const registerLimiter = createLimiter({ maxFails: 10, lockSec: 3600 });
 
-/** 客户端 IP：X-Forwarded-For 首段优先，其次 socket 地址 */
+/** 客户端 IP：只使用经过 Express 信任代理策略解析的地址 */
 function clientIp(req) {
-  const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  if (fwd) return fwd;
   return req.ip || (req.socket && req.socket.remoteAddress) || '?';
 }
 

@@ -17,8 +17,8 @@
  *   浏览器 POST /api/auth/oauth/finish（携带票据 Cookie）→ 换取本站 JWT + 会话密钥
  *     （绑定票据要求同时携带有效的登录态，把外部身份并入当前账号）
  *
- * state 与 verifier 全程不落盘、不经过浏览器，票据单次有效；未配置 OAUTH_* 时
- * 提供方列表为空，登录页只显示本地登录。
+ * verifier 只存服务端，state 与发起浏览器的 HttpOnly Cookie 绑定；票据单次有效。
+ * 未配置 OAUTH_* 时提供方列表为空，登录页只显示本地登录。
  */
 
 const crypto = require('node:crypto');
@@ -33,6 +33,7 @@ const DISCOVERY_TTL_MS = 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10 * 1000;
 const MAX_PENDING = 512;                 // 未完成授权上限，防止内存堆积
 const TICKET_COOKIE = 'sc_oauth_ticket';
+const BROWSER_COOKIE = 'sc_oauth_browser';
 
 const pending = new Map();        // state -> { providerId, codeVerifier, redirectUri, expires }
 const tickets = new Map();        // ticketId -> { payload, expires }
@@ -59,12 +60,10 @@ function getProvider(id) {
   return config.oauthProviders.find(p => p.id === id) || null;
 }
 
-/** 回调地址的协议+主机：优先 APP_BASE_URL，其次信任反向代理头与 Host */
+/** 回调地址：优先 APP_BASE_URL，否则由 Express 信任代理策略解析协议 */
 function requestBase(req) {
   if (config.oauthRedirectBase) return config.oauthRedirectBase;
-  const fwd = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
-  const proto = fwd === 'https' || fwd === 'http' ? fwd : (req.secure ? 'https' : 'http');
-  return proto + '://' + (req.headers.host || 'localhost');
+  return (req.secure ? 'https' : 'http') + '://' + (req.headers.host || 'localhost');
 }
 
 /** 拉取并缓存 IdP 发现文档 */
@@ -88,7 +87,8 @@ function callbackPath(providerId) {
 }
 
 /** 生成授权 URL，state/verifier 存服务端（一次性）。mode: 'login' 登录 / 'link' 绑定已有账号 */
-async function startAuthorize(provider, redirectBase, { mode = 'login' } = {}) {
+async function startAuthorize(provider, redirectBase, { mode = 'login', browserId } = {}) {
+  if (!validBrowserId(browserId)) throw new Error('缺少浏览器绑定标识');
   const doc = await discover(provider);
   const state = rand(32);
   const codeVerifier = rand(48);
@@ -96,6 +96,7 @@ async function startAuthorize(provider, redirectBase, { mode = 'login' } = {}) {
   prune(pending);
   pending.set(state, {
     providerId: provider.id,
+    browserId,
     codeVerifier,
     redirectUri,
     mode: mode === 'link' ? 'link' : 'login',
@@ -169,14 +170,17 @@ async function fetchUserinfo(provider, doc, accessToken) {
  * 校验 state 并完成令牌交换，返回 { identity, mode }。
  * mode 为发起时记录的用途：'login' 登录 / 'link' 绑定到已登录账号。
  */
-async function finishAuthorize(provider, { code, state }) {
+async function finishAuthorize(provider, { code, state }, browserId) {
   if (typeof code !== 'string' || !code) throw new Error('缺少授权码');
   if (typeof state !== 'string' || !state) throw new Error('缺少 state 参数');
   prune(pending);
   const entry = pending.get(state);
   if (!entry) throw new Error('登录会话已过期或已使用，请重新发起登录');
-  pending.delete(state);   // state 一次性，防重放
+  if (!validBrowserId(browserId) || browserId !== entry.browserId) {
+    throw new Error('登录会话与当前浏览器不匹配，请重新发起登录');
+  }
   if (entry.providerId !== provider.id) throw new Error('state 与登录方式不匹配');
+  pending.delete(state);   // 先验证浏览器，再消费 state，防跨浏览器重放与恶意失效
   const doc = await discover(provider);
   const accessToken = await exchangeCode(provider, doc, {
     code, redirectUri: entry.redirectUri, codeVerifier: entry.codeVerifier,
@@ -207,17 +211,22 @@ async function resolveUser(identity) {
   let u = db.prepare('SELECT * FROM users WHERE auth_provider = ? AND auth_sub = ?')
     .get(identity.providerId, identity.sub);
   if (!u) {
-    const username = pickUsername(identity.username);
-    const nickname = (identity.nickname && identity.nickname.trim()) || username;
     const salt = makeSalt();
     const hash = await hashPasswordAsync(crypto.randomBytes(32).toString('hex'), salt);
-    const now = Date.now();
-    const info = db.prepare(
-      'INSERT INTO users (username, nickname, password_hash, salt, created_at, last_seen, auth_provider, auth_sub, shadow)' +
-      ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)'
-    ).run(username, nickname, hash, salt, now, now, identity.providerId, identity.sub);
-    u = getUserById(Number(info.lastInsertRowid));
-    ensureFriendWithSystem(u.id);   // 与本地注册一致：自动成为「文件传输助手」好友
+    // 哈希期间其它回调或绑定可能已创建映射；二次查找与 INSERT 在同一同步块。
+    u = db.prepare('SELECT * FROM users WHERE auth_provider = ? AND auth_sub = ?')
+      .get(identity.providerId, identity.sub);
+    if (!u) {
+      const username = pickUsername(identity.username);
+      const nickname = ((identity.nickname && identity.nickname.trim()) || username).slice(0, 20);
+      const now = Date.now();
+      const info = db.prepare(
+        'INSERT INTO users (username, nickname, password_hash, salt, created_at, last_seen, auth_provider, auth_sub, shadow)' +
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)'
+      ).run(username, nickname, hash, salt, now, now, identity.providerId, identity.sub);
+      u = getUserById(Number(info.lastInsertRowid));
+      ensureFriendWithSystem(u.id);   // 与本地注册一致：自动成为「文件传输助手」好友
+    }
   }
   db.prepare('UPDATE users SET last_seen = ? WHERE id = ?').run(Date.now(), u.id);
   return u;
@@ -276,28 +285,48 @@ function consumeTicket(id) {
   return entry.payload;
 }
 
-function setTicketCookie(res, ticket) {
-  const parts = [
-    TICKET_COOKIE + '=' + ticket, 'Path=/', 'HttpOnly', 'SameSite=Lax',
-    'Max-Age=' + Math.floor(TICKET_TTL_MS / 1000),
-  ];
-  if (config.useTls) parts.push('Secure');
-  res.setHeader('Set-Cookie', parts.join('; '));
+function secureCookie(req) {
+  return !!(config.useTls || req?.secure || config.oauthRedirectBase.startsWith('https://'));
 }
 
-function clearTicketCookie(res) {
-  res.setHeader('Set-Cookie', TICKET_COOKIE + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+function setCookie(res, name, value, maxAge, req) {
+  const parts = [name + '=' + value, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=' + maxAge];
+  if (secureCookie(req)) parts.push('Secure');
+  res.append('Set-Cookie', parts.join('; '));
 }
 
-function readTicketCookie(req) {
-  const m = new RegExp('(?:^|;\\s*)' + TICKET_COOKIE + '=([^;]*)').exec(req.headers.cookie || '');
+function readCookie(req, name) {
+  const m = new RegExp('(?:^|;\\s*)' + name + '=([^;]*)').exec(req.headers.cookie || '');
   return m ? m[1] : null;
 }
+
+function validBrowserId(id) { return typeof id === 'string' && /^[A-Za-z0-9_-]{43}$/.test(id); }
+
+function readBrowserCookie(req) { return readCookie(req, BROWSER_COOKIE); }
+
+function bindBrowser(req, res) {
+  const previous = readBrowserCookie(req);
+  const id = validBrowserId(previous) ? previous : rand(32);
+  setCookie(res, BROWSER_COOKIE, id, STATE_TTL_MS / 1000, req);
+  return id;
+}
+
+function setTicketCookie(res, ticket, req) {
+  setCookie(res, TICKET_COOKIE, ticket, TICKET_TTL_MS / 1000, req);
+}
+
+function clearTicketCookie(res, req) {
+  setCookie(res, TICKET_COOKIE, '', 0, req);
+}
+
+function readTicketCookie(req) { return readCookie(req, TICKET_COOKIE); }
 
 module.exports = {
   listProviders,
   getProvider,
   requestBase,
+  bindBrowser,
+  readBrowserCookie,
   startAuthorize,
   finishAuthorize,
   resolveUser,

@@ -144,11 +144,11 @@ Sakura-Chat/
 ```
 
 1. **传输层加密**：启用 `SSL_KEY_PATH/SSL_CERT_PATH` 后自动切换为 HTTPS + WSS（见下文部署）。
-2. **应用层加密（端到密文）**：登录成功或页面刷新时，服务端向**已认证**客户端下发一次性会话密钥（AES-256-GCM）。
+2. **应用层加密（客户端到服务端）**：登录成功或页面刷新时，服务端向**已认证**客户端下发会话密钥（AES-256-GCM）。
    之后所有 WebSocket 业务载荷（聊天内容、撤回、输入状态等）都先用该密钥加密再发送。
-   **即使开发期使用明文 HTTP/WS，聊天内容在链路上也全是密文**，且浏览器端使用 Web Crypto API 原生实现，与服务端格式完全互通。
-3. **存储加密**：所有聊天记录以 AES-256-GCM 加密后写入 SQLite 的 `content_enc` 字段，主密钥保存在 `server/data/key.json`（已在 `.gitignore` 中）。
-   数据库文件即使被拖走也无法读到明文。
+   浏览器端使用 Web Crypto API 原生实现，与服务端格式互通。**不能因此省略 HTTPS：明文 HTTP 会暴露密码、JWT 和会话密钥。**
+3. **存储加密**：消息正文以 AES-256-GCM 加密后写入 SQLite 的 `content_enc` 字段，主密钥保存在 `server/data/key.json`（已在 `.gitignore` 中）。
+   仅取得数据库而没有主密钥，无法直接读取加密正文；但当前引用摘要 `reply_snip`、转发来源等元数据仍为明文，上传附件也不在该加密范围内。
 
 > 安全边界说明：服务端持有主密钥，因此**可以**解密并存储消息（用于搜索/漫游）。这是与端到端加密（E2EE）的取舍：本方案换取了聊天记录搜索能力，代价是信任服务器。
 
@@ -163,7 +163,7 @@ Sakura-Chat/
 3. **Authentik**：接入任意 Authentik 实例（同样走标准 OIDC）。
 
 Sakura-Chat 作为标准 OIDC 客户端，使用**授权码 + PKCE（S256）**流程：浏览器打开
-`/api/auth/oauth/<提供方>/start` → 服务端生成 `state` 与 `code_verifier`（只存服务端）后跳转到 IdP →
+`/api/auth/oauth/<提供方>/start` → 服务端生成 `state` 与 `code_verifier`（verifier 只存服务端，state 绑定发起浏览器的 HttpOnly Cookie）后跳转到 IdP →
 用户在 IdP 完成登录/同意 → 回调 `/api/auth/oauth/<提供方>/callback` 由服务端校验 `state`、换取令牌、
 拉取 `userinfo` → 签发一次性票据（HttpOnly Cookie）跳回前端 → 前端 `POST /api/auth/oauth/finish`
 换取本站 JWT + 会话密钥。`state` 与票据均一次性有效，重放即拒绝。
@@ -289,7 +289,9 @@ git pull && docker compose up -d --build
 数据安全须知：
 - `sakura-data` 卷保存 **主密钥 key.json + SQLite 数据库**，务必定期 `docker run --rm -v sakura-chat_sakura-data:/data -v $PWD:/backup alpine tar czf /backup/data.tgz -C /data .` 备份
 - 反代（Nginx/Caddy）终结 TLS 时需放行 WebSocket Upgrade 头，并转发 `ws` 到容器 3000 端口
-- 反代需正确设置 `X-Forwarded-For`（Nginx：`proxy_set_header X-Forwarded-For $remote_addr;`），登录/注册限流依赖该头识别客户端 IP；错误配置会导致同一代理后的用户共享限流配额，或被恶意请求伪造绕过单 IP 锁定
+- 反代必须覆盖 `X-Forwarded-For`（Nginx：`proxy_set_header X-Forwarded-For $remote_addr;`），并设置 `X-Forwarded-Proto $scheme`。应用默认忽略转发头；需在环境变量 `TRUST_PROXY` 中显式列出实际代理 IP/CIDR（同机裸跑可用 `loopback`，Docker 应使用实际代理地址）。不要信任所有来源或任意跳数，否则客户端仍可能伪造 IP。未配置白名单时同一代理后的用户会共享限流配额。
+- OAuth 生产部署建议显式配置 `APP_BASE_URL=https://你的域名`；浏览器绑定 Cookie 与票据 Cookie 会按外部 HTTPS 地址或可信代理协议标记 `Secure`。
+- 上传资源目前是公开静态文件（知道 URL 即可访问），并非按会话鉴权或加密的私密附件；不要上传需严格访问控制的资料。
 
 ### 方式二：GHCR 镜像直拉（无需源码与构建环境）
 

@@ -95,6 +95,15 @@ test('上传资源安全：SVG 强制附件下载 + nosniff 头', async () => {
     assert.equal(res.headers.get('content-disposition'), 'attachment', 'SVG 必须强制附件下载，阻断同源脚本执行');
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
 
+    // express.static 会解码路径，防护不能只匹配原始 req.path。
+    for (const url of [svg.data.url.replace('.svg', '%2Esvg'), svg.data.url.replace('.svg', '.%73vg'),
+      svg.data.url.replace('/uploads/', '/%75ploads/')]) {
+      const encoded = await fetch(chat.origin + url);
+      assert.equal(encoded.status, 200);
+      assert.equal(encoded.headers.get('content-disposition'), 'attachment', url);
+      await encoded.arrayBuffer();
+    }
+
     const png = await post(chat.origin + '/api/upload', { data: pngPixel, filename: 'dot.png' }, token);
     assert.equal(png.status, 200);
     const pngRes = await fetch(chat.origin + png.data.url);
@@ -106,6 +115,19 @@ test('上传资源安全：SVG 强制附件下载 + nosniff 头', async () => {
   } finally {
     await chat.stop();
   }
+});
+
+test('非法上传文件名返回 400 而不是导致服务退出', async () => {
+  const chat = await startChat();
+  try {
+    await post(chat.origin + '/api/auth/register', { username: 'bad_upload', password: 'pass1234' });
+    const login = await post(chat.origin + '/api/auth/login', { username: 'bad_upload', password: 'pass1234' });
+    for (const filename of [{ name: 'test.png' }, ['test.png'], 42]) {
+      const res = await post(chat.origin + '/api/upload', { data: pngPixel, filename }, login.data.token);
+      assert.equal(res.status, 400);
+      assert.equal((await fetch(chat.origin + '/api/health')).status, 200);
+    }
+  } finally { await chat.stop(); }
 });
 
 test('群资料越权：非成员读取群成员名单被拒绝', async () => {

@@ -41,12 +41,14 @@ router.post('/register', asyncRoute(async (req, res) => {
   if (!validUsername(username)) return res.status(400).json({ error: '用户名需为 3-20 位字母、数字或下划线' });
   if (!validPassword(password)) return res.status(400).json({ error: '密码长度需为 6-32 位' });
   const nick = (typeof nickname === 'string' && nickname.trim()) || username;
+  if (nick.length > 20) return res.status(400).json({ error: '昵称最多 20 个字符' });
   if (getUserByUsername(username)) return res.status(409).json({ error: '该用户名已被注册' });
 
   const salt = makeSalt();
   const hash = await hashPasswordAsync(password, salt);
-  // 异步计算期间同名注册可能先完成，插入前再次检查。
+  // 异步计算期间同名注册或同 IP 的其它注册可能先完成，插入前再次检查。
   if (getUserByUsername(username)) return res.status(409).json({ error: '该用户名已被注册' });
+  if (registerLimiter.tooMany(rk)) return res.status(429).json({ error: '注册过于频繁，请稍后再试' });
   const now = Date.now();
   const info = db.prepare(
     'INSERT INTO users (username, nickname, password_hash, salt, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)'
@@ -108,13 +110,14 @@ router.get('/providers', (req, res) => {
   res.json({ providers: oauth.listProviders() });
 });
 
-// 第三方登录：发起授权（302 到身份提供方）。state 与 PKCE verifier 仅存服务端。
+// 第三方登录：发起授权（302 到身份提供方）。PKCE verifier 仅存服务端，state 绑定浏览器。
 //   ?link=1 为「绑定已有账号」模式：无需在跳转时鉴权，绑定动作在 finish 时凭票据+登录态完成
 router.get('/oauth/:provider/start', asyncRoute(async (req, res) => {
   const provider = oauth.getProvider(req.params.provider);
   if (!provider) return res.status(404).json({ error: '未配置该登录方式' });
   const url = await oauth.startAuthorize(provider, oauth.requestBase(req), {
     mode: req.query.link === '1' ? 'link' : 'login',
+    browserId: oauth.bindBrowser(req, res),
   });
   res.redirect(url);
 }));
@@ -127,10 +130,10 @@ router.get('/oauth/:provider/callback', asyncRoute(async (req, res) => {
   const fail = msg => res.redirect('/login?oauth=error&msg=' + encodeURIComponent(msg || '第三方登录失败'));
   if (!provider) return fail('未配置该登录方式');
   try {
-    const { identity, mode } = await oauth.finishAuthorize(provider, req.query);
+    const { identity, mode } = await oauth.finishAuthorize(provider, req.query, oauth.readBrowserCookie(req));
     if (mode === 'link') {
       const ticket = oauth.issueTicket({ mode: 'link', identity });
-      oauth.setTicketCookie(res, ticket);
+      oauth.setTicketCookie(res, ticket, req);
       return res.redirect('/?oauth=link');
     }
     const u = await oauth.resolveUser(identity);
@@ -141,7 +144,7 @@ router.get('/oauth/:provider/callback', asyncRoute(async (req, res) => {
       sessionId: sess.sessionId,
       sessionKey: sess.sessionKey,
     });
-    oauth.setTicketCookie(res, ticket);
+    oauth.setTicketCookie(res, ticket, req);
     return res.redirect('/login?oauth=callback');
   } catch (err) {
     console.error('[oauth] 第三方登录回调失败：', err.message);
@@ -155,7 +158,7 @@ router.get('/oauth/:provider/callback', asyncRoute(async (req, res) => {
 router.post('/oauth/finish', asyncRoute(async (req, res) => {
   const payload = oauth.consumeTicket(oauth.readTicketCookie(req));
   if (!payload) return res.status(401).json({ error: '第三方登录票据不存在或已过期，请重新登录' });
-  oauth.clearTicketCookie(res);
+  oauth.clearTicketCookie(res, req);
   if (payload.mode === 'link') {
     const user = bearerUser(req);
     if (!user) return res.status(401).json({ error: '登录已过期，请重新登录后再绑定' });

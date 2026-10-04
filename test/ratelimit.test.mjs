@@ -28,7 +28,7 @@ async function freePort() {
 }
 
 /** 启动临时 Sakura-Chat 服务（隔离端口与数据目录） */
-async function startChat() {
+async function startChat(trustProxy = '') {
   const port = await freePort();
   const dataDir = await mkdtemp(path.join(tmpdir(), 'sakura-rl-'));
   const baseEnv = Object.fromEntries(
@@ -36,7 +36,7 @@ async function startChat() {
   );
   const env = {
     ...baseEnv, PORT: String(port), SAKURA_DATA_DIR: dataDir,
-    SSL_KEY_PATH: '', SSL_CERT_PATH: '', JWT_SECRET: 'ratelimit-test-' + port,
+    SSL_KEY_PATH: '', SSL_CERT_PATH: '', JWT_SECRET: 'ratelimit-test-' + port, TRUST_PROXY: trustProxy,
   };
   const child = spawn(process.execPath, [path.join(root, 'server/index.js')], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
@@ -109,8 +109,52 @@ test('createLimiter：键互相隔离，Map 有硬上限', () => {
   assert.equal(lim.tooMany('burst-499'), true, '新键的锁定状态准确');
 });
 
-test('HTTP 集成：登录失败锁定与注册限频', async t => {
+test('直连：伪造 X-Forwarded-For 不能绕过登录锁定', async () => {
   const chat = await startChat();
+  try {
+    for (let i = 0; i < 5; i++) {
+      const r = await post(chat.origin + '/api/auth/login', { username: 'absent', password: 'badpass' });
+      assert.equal(r.status, 401);
+    }
+    const r = await post(chat.origin + '/api/auth/login', { username: 'absent', password: 'badpass' },
+      { 'X-Forwarded-For': '192.0.2.45' });
+    assert.equal(r.status, 429);
+  } finally { await chat.stop(); }
+});
+
+test('createLimiter：满表读取及更新已有键不能逐出锁定记录', () => {
+  const lim = createLimiter({ maxFails: 1, maxKeys: 2, clock: () => 1000 });
+  lim.hit('a'); lim.hit('b');
+  for (let i = 0; i < 10; i++) {
+    assert.equal(lim.tooMany('a'), true);
+    assert.equal(lim.tooMany('missing'), false);
+    lim.hit('b');
+    assert.equal(lim.size, 2);
+  }
+});
+
+test('注册：同 IP 剩余一个配额时并发请求不能超额', async () => {
+  const chat = await startChat();
+  try {
+    const tooLong = await post(chat.origin + '/api/auth/register', {
+      username: 'long_nickname', password: 'pass1234', nickname: 'x'.repeat(21),
+    });
+    assert.equal(tooLong.status, 400, '注册昵称与资料修改接口使用相同长度上限');
+    for (let i = 0; i < 9; i++) {
+      assert.equal((await post(chat.origin + '/api/auth/register', {
+        username: 'quota_' + i, password: 'pass1234',
+      })).status, 200);
+    }
+    const results = await Promise.all([9, 10, 11, 12].map(i => post(chat.origin + '/api/auth/register', {
+      username: 'quota_' + i, password: 'pass1234',
+    })));
+    assert.equal(results.filter(r => r.status === 200).length, 1);
+    assert.equal(results.filter(r => r.status === 429).length, 3);
+  } finally { await chat.stop(); }
+});
+
+test('HTTP 集成：登录失败锁定与注册限频', async t => {
+  const chat = await startChat('loopback');
   try {
     await t.test('连续 5 次密码错误后锁定，锁定期内正确密码也被拒绝', async () => {
       await post(chat.origin + '/api/auth/register', { username: 'rl_alice', password: 'pass1234' });

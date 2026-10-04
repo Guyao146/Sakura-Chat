@@ -62,6 +62,8 @@ function parseOAuthProviders() {
 
 const config = {
   port: parseInt(process.env.PORT || '3000', 10),
+  // 默认不信任转发头；只允许实际反向代理的地址/CIDR，禁止笼统信任所有来源。
+  trustProxy: (process.env.TRUST_PROXY || '').split(',').map(s => s.trim()).filter(Boolean),
   jwtSecret: process.env.JWT_SECRET || 'sakura-chat-dev-secret-please-change',
   jwtExpiresSec: 7 * 24 * 3600,
   root: ROOT,

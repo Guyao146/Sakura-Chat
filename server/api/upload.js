@@ -19,6 +19,9 @@ const EXT_WHITELIST = new Set([
 /** Base64 图片/文件上传，落盘到 public/uploads（静态目录可直接访问） */
 router.post('/', async (req, res, next) => {
   const { data, filename } = req.body || {};
+  if (filename !== undefined && (typeof filename !== 'string' || filename.length > 255)) {
+    return res.status(400).json({ error: '文件名必须是最多 255 个字符的字符串' });
+  }
   if (typeof data !== 'string' || !data.startsWith('data:')) {
     return res.status(400).json({ error: '仅支持 data:base64 格式' });
   }

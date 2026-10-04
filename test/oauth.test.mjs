@@ -200,12 +200,13 @@ async function runFlow(chat, idp, loginAs, { link = false } = {}) {
   assert.equal(r2.status, 302, 'IdP 应重定向回回调地址');
   const callbackUrl = r2.headers.location;
 
-  const r3 = await httpRequest(callbackUrl);
+  const browserCookie = (r1.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
+  const r3 = await httpRequest(callbackUrl, { headers: { cookie: browserCookie } });
   // Node http 模块的 set-cookie 是数组；只取第一条 cookie 的 name=value
   const setCookie = r3.headers['set-cookie'];
   const cookie = Array.isArray(setCookie) && setCookie.length ? setCookie[0].split(';')[0]
     : (typeof setCookie === 'string' ? setCookie.split(';')[0] : '');
-  return { status: r3.status, location: r3.headers.location, cookie, callbackUrl };
+  return { status: r3.status, location: r3.headers.location, cookie, callbackUrl, browserCookie };
 }
 
 /** 用票据 Cookie 换取本站会话；bearer 非空时附带登录态（绑定模式） */
@@ -233,6 +234,20 @@ async function registerAndLogin(chat, username, password) {
   assert.equal(login.status, 200, '登录应成功');
   return JSON.parse(login.body);
 }
+// 回调 URL 可被转交给另一浏览器，必须同时验证发起浏览器的 HttpOnly Cookie。
+async function foreignCallback(chat, loginAs, link) {
+  const start = await httpRequest(chat + '/api/auth/oauth/sakura/start' + (link ? '?link=1' : ''));
+  const authorize = await httpRequest(start.headers.location + '&login_as=' + loginAs);
+  for (const cookie of ['', 'sc_oauth_browser=' + base64url(crypto.randomBytes(32))]) {
+    const cb = await httpRequest(authorize.headers.location, { headers: { cookie } });
+    assert.equal(new URL(cb.headers.location, chat).searchParams.get('oauth'), 'error');
+    assert.ok(!(cb.headers['set-cookie'] || []).some(c => c.startsWith('sc_oauth_ticket=')));
+  }
+  // 攻击请求不应消费原浏览器的 state。
+  const cookie = (start.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
+  const ok = await httpRequest(authorize.headers.location, { headers: { cookie } });
+  assert.equal(new URL(ok.headers.location, chat).searchParams.get('oauth'), link ? 'link' : 'callback');
+}
 
 test('OAuth/OIDC 第三方登录', async t => {
   const chatPort = await freePort();
@@ -258,6 +273,10 @@ test('OAuth/OIDC 第三方登录', async t => {
     const unknown = await httpRequest(chat + '/api/auth/oauth/github/start');
     assert.equal(unknown.status, 404);
   });
+
+  await t.test('跨浏览器回调被拒绝（登录 CSRF）', () => foreignCallback(chat, 'alice', false));
+  await t.test('跨浏览器回调被拒绝（外部身份绑定 CSRF）', () => foreignCallback(chat, 'carol', true));
+
 
   await t.test('完整流程：首次登录自动建号并签发本站会话', async () => {
     const flow = await runFlow(chat, idp, 'alice');
@@ -297,7 +316,7 @@ test('OAuth/OIDC 第三方登录', async t => {
     const cookie = flow.cookie;
 
     // 重放回调 URL：state 已被消费
-    const replay = await httpRequest(flow.callbackUrl);
+    const replay = await httpRequest(flow.callbackUrl, { headers: { cookie: flow.browserCookie } });
     assert.equal(replay.status, 302);
     const loc = new URL(replay.headers.location, chat);
     assert.equal(loc.pathname, '/login');

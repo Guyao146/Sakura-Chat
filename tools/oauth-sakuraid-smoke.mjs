@@ -105,8 +105,8 @@ async function seedIdp(dataDir, { issuer, redirectUri, username, password, name 
   runtimeMod.reloadRuntime();
   keysMod.initKeys();                                 // 生成 RS256 签名密钥
 
-  usersMod.create({ username, passwordHash: passwordMod.hashPassword(password), name });
-  usersMod.create({ username: 'sso_bob', passwordHash: passwordMod.hashPassword(password), name: '联调鲍勃' });
+  usersMod.create({ username, passwordHash: await passwordMod.hashPassword(password), name });
+  usersMod.create({ username: 'sso_bob', passwordHash: await passwordMod.hashPassword(password), name: '联调鲍勃' });
   const client = clientsMod.create({
     name: 'Sakura Chat 联调',
     redirectUris: [redirectUri],
@@ -193,7 +193,8 @@ async function main() {
         authorize.status === 302 && authorize.headers.location.startsWith(chat + '/api/auth/oauth/sakura/callback'));
 
       const chatJar = new Jar();
-      const cb = await request(authorize.headers.location);
+      chatJar.capture(start);
+      const cb = await request(authorize.headers.location, { headers: { cookie: chatJar.header() } });
       chatJar.capture(cb);
       if (link) {
         check('绑定回调跳回应用页并签发票据',

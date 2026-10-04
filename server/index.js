@@ -20,6 +20,7 @@ const { auth } = require('./middleware');
 const { attach } = require('./ws');
 
 const app = express();
+app.set('trust proxy', config.trustProxy);
 app.use(express.json({ limit: '12mb' }));
 app.use(express.urlencoded({ extended: true, limit: '12mb' }));
 
@@ -29,16 +30,16 @@ app.use((req, res, next) => {
   next();
 });
 
-// 上传目录保护：SVG 可内嵌 <script>，顶层导航到 /uploads/x.svg 会同源执行脚本
-// （可读 localStorage 窃取登录令牌）；强制附件下载后浏览器不再渲染执行。
-// <img> 标签加载 SVG 不执行脚本，头像与图片消息不受影响。
-app.use('/uploads', (req, res, next) => {
-  if (/\.svg$/i.test(req.path)) res.setHeader('Content-Disposition', 'attachment');
-  next();
-});
-
-// 前端静态资源
-app.use(express.static(path.join(config.root, 'public')));
+// 按静态服务器最终解析的文件路径设置安全头，避免 URL 编码/路径规范化绕过。
+// SVG 顶层导航可能同源执行脚本；附件下载不影响 <img> 加载。
+app.use(express.static(path.join(config.root, 'public'), {
+  setHeaders(res, filePath) {
+    if (path.extname(filePath).toLowerCase() === '.svg' &&
+      path.relative(config.uploadsDir, filePath).split(path.sep)[0] !== '..') {
+      res.setHeader('Content-Disposition', 'attachment');
+    }
+  },
+}));
 
 // 业务 API
 app.use('/api/auth', require('./api/auth'));
@@ -71,7 +72,7 @@ if (config.useTls) {
   console.log('[security] 已启用 HTTPS + WSS（传输层加密）');
 } else {
   server = http.createServer(app);
-  console.log('[warn] 未启用 TLS。聊天内容仍受应用层 AES-256-GCM 加密保护；生产环境请配置正式证书');
+  console.log('[warn] 未启用本机 TLS。生产环境必须使用 HTTPS 反向代理或正式证书；应用层加密不能保护明文 HTTP 下发的密码、令牌和会话密钥');
 }
 
 attach(server);
