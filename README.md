@@ -345,3 +345,13 @@ PORT=3000 JWT_SECRET=<随机值> node server/index.js
 - 图片与语音文件本身以文件形式存放于 uploads 目录，未做静态加密（消息正文中的链接仍加密存储）。
 - 音视频通话仅支持**好友间 1 对 1**；群组多人通话需要 SFU 媒体服务器（如 mediasoup/LiveKit），暂未集成。
 - 语音消息的波形为录音时采集的频谱峰值快照，并非精确音频波形。
+
+---
+
+## 📄 许可证
+
+本项目采用 **Sakura-License v1.2**（源码可用许可证，**非 OSI 开源许可证**）：源码可见、受覆盖的衍生作品须同许可共享、保留署名，**特定商用须事先取得版权人书面授权**（个人学习、教育、非营利活动与免费公开分享无需另行授权）。
+
+- 完整许可正文见仓库根目录 [LICENSE](LICENSE)；采用范围、生效提交、排除项与第三方组件清单见 [NOTICE.md](NOTICE.md)。
+- 正文为固定文本，逐字取自 [Sakura-EcoSystem-wiki](https://github.com/Guyao146/Sakura-EcoSystem-wiki/blob/a8cbb9ee3741b32bd11d511d227a1a96bf256146/licenses/Sakura-License-1.2-draft.md) 的提交 `a8cbb9e`。
+- 运行依赖 `express` 与 `ws`（均为 MIT）保持各自原有许可，不因一同分发而改用 Sakura-License。
